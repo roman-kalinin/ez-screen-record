@@ -897,6 +897,21 @@ export function App() {
       setSourcesLoading(false);
     }
     setSources(list);
+
+    // Drop a saved source that no longer exists. A window id persisted from a
+    // previous session points at a window that has since closed, and recording
+    // then fails with nothing shown to the user — the record button appears to
+    // do nothing at all.
+    const saved = settingsRef.current.recording.screenSourceId;
+    if (saved && list.length > 0 && !list.some((x) => x.id === saved)) {
+      const fallback = list.find((x) => x.kind === 'screen');
+      setSettings((p) => ({
+        ...p,
+        recording: { ...p.recording, screenSourceId: fallback?.id ?? null },
+      }));
+      return;
+    }
+
     // Default to the primary screen so the app is usable immediately.
     if (!settingsRef.current.recording.screenSourceId) {
       const first = list.find((x) => x.kind === 'screen');
