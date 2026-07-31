@@ -17,6 +17,7 @@ import {
   VideoRegular,
   VideoOffRegular,
   DesktopRegular,
+  ReOrderDotsVerticalRegular,
 } from '@fluentui/react-icons';
 import { PillControl } from './components/PillControl';
 import { buildTheme, DEFAULT_ACCENT } from './theme';
@@ -46,16 +47,13 @@ const useStyles = makeStyles({
     position: 'fixed',
     inset: 0,
     pointerEvents: 'none',
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'flex-start',
-    paddingTop: '14px',
   },
   bar: {
+    position: 'absolute',
     display: 'flex',
     alignItems: 'center',
     gap: '10px',
-    padding: '8px 14px',
+    padding: '8px 10px 8px 6px',
     borderRadius: '32px',
     background: 'rgba(28,28,32,0.97)',
     border: '1px solid rgba(255,255,255,0.12)',
@@ -69,8 +67,24 @@ const useStyles = makeStyles({
     borderRadius: '50%',
     background: '#ff3b30',
     flexShrink: 0,
-    marginRight: '2px',
   },
+  /**
+   * Drag grip. The bar cannot use `-webkit-app-region: drag` — this window
+   * spans the whole display, so dragging it would move the window, not the
+   * bar, and the bar's position within it would never change. The grip
+   * repositions the bar inside the window instead.
+   */
+  grip: {
+    display: 'grid',
+    placeItems: 'center',
+    width: '18px',
+    height: '32px',
+    flexShrink: 0,
+    cursor: 'grab',
+    color: 'rgba(255,255,255,0.45)',
+    ':hover': { color: 'rgba(255,255,255,0.85)' },
+  },
+  gripDragging: { cursor: 'grabbing' },
   roundBtn: {
     width: '40px',
     height: '40px',
@@ -148,6 +162,36 @@ function Toolbar() {
   const s = useStyles();
   const [st, setSt] = useState<ToolbarState | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
+  /** Bar position within the full-screen window. null = default (top centre). */
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef<{ dx: number; dy: number } | null>(null);
+
+  const onGripDown = (e: React.PointerEvent) => {
+    const bar = barRef.current;
+    if (!bar) return;
+    e.preventDefault();
+    const r = bar.getBoundingClientRect();
+    dragRef.current = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    setDragging(true);
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+
+  const onGripMove = (e: React.PointerEvent) => {
+    const drag = dragRef.current;
+    const bar = barRef.current;
+    if (!drag || !bar) return;
+    const r = bar.getBoundingClientRect();
+    // Keep the bar fully on screen; it is the only way to stop a take.
+    const x = Math.min(Math.max(e.clientX - drag.dx, 0), window.innerWidth - r.width);
+    const y = Math.min(Math.max(e.clientY - drag.dy, 0), window.innerHeight - r.height);
+    setPos({ x, y });
+  };
+
+  const onGripUp = () => {
+    dragRef.current = null;
+    setDragging(false);
+  };
 
   useEffect(() => window.ez.on('toolbar:state', (next: ToolbarState) => setSt(next)), []);
 
@@ -191,7 +235,29 @@ function Toolbar() {
 
   return (
     <div className={s.root}>
-      <div className={s.bar} ref={barRef} data-ui>
+      <div
+        className={s.bar}
+        ref={barRef}
+        data-ui
+        style={
+          pos
+            ? { left: `${pos.x}px`, top: `${pos.y}px` }
+            : // Default: top centre, like Zoom's share bar.
+              { left: '50%', top: '14px', transform: 'translateX(-50%)' }
+        }
+      >
+        <Tooltip content="Drag to move" relationship="label" withArrow>
+          <div
+            className={`${s.grip} ${dragging ? s.gripDragging : ''}`}
+            onPointerDown={onGripDown}
+            onPointerMove={onGripMove}
+            onPointerUp={onGripUp}
+            onPointerCancel={onGripUp}
+          >
+            <ReOrderDotsVerticalRegular fontSize={18} />
+          </div>
+        </Tooltip>
+
         <div className={s.recDot} />
 
         <PillControl

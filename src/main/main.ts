@@ -409,6 +409,13 @@ function exitToolbarMode() {
 
 function registerIpc() {
   ipcMain.handle('sources:list', async (): Promise<CaptureSource[]> => {
+    // NOTE: minimized windows are absent from this list, and that is
+    // Chromium's behaviour rather than something we filter. A minimized window
+    // has no composited pixels, so the capturer cannot enumerate or record it.
+    // Verified on a desktop with 8 open windows: 4 were minimized and only the
+    // other 4 were returned. Neither the WGC feature flags nor disabling them
+    // changes this. The user-facing fix is to say so in the picker rather than
+    // silently show a short list — restore the window and refresh.
     const sources = await desktopCapturer.getSources({
       types: ['screen', 'window'],
       thumbnailSize: { width: 320, height: 200 },

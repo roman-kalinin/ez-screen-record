@@ -796,12 +796,30 @@ export function App() {
     [],
   );
 
-  // Push camera changes (shape, mirror, shadow, device, rect) into the bubble
-  // while a Mode A take is running, so edits are live on the real desktop too.
+  // Push camera changes (enabled, shape, mirror, shadow, device, rect) into the
+  // bubble while a take runs, so edits are live on the real desktop too.
+  //
+  // Driven by the CURRENT camera setting rather than a flag captured at record
+  // start: turning the camera off and on again mid-take left that flag false,
+  // so the config stopped being sent and the bubble never came back.
   useEffect(() => {
-    if (!onScreenCameraRef.current) return;
     if (state !== 'recording' && state !== 'paused') return;
-    void window.ez.cameraOverlay.send('cameraOverlay:config', settings.camera);
+
+    if (settings.camera.enabled && settings.camera.deviceId) {
+      if (!onScreenCameraRef.current) {
+        // Re-enabled mid-take: the window was hidden on the way out, so it has
+        // to be shown again before it will render anything.
+        onScreenCameraRef.current = true;
+        const src = sourcesRef.current.find(
+          (x) => x.id === settingsRef.current.recording.screenSourceId,
+        );
+        void window.ez.cameraOverlay.show(src?.displayId);
+      }
+      void window.ez.cameraOverlay.send('cameraOverlay:config', settings.camera);
+    } else if (onScreenCameraRef.current) {
+      onScreenCameraRef.current = false;
+      void window.ez.cameraOverlay.hide();
+    }
   }, [settings.camera, state]);
 
   // Main reports any shortcut another app already owns.

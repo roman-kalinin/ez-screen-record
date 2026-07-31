@@ -127,6 +127,16 @@ export function SourceDialog({
               </Button>
             </div>
 
+            {/* Minimized windows cannot be enumerated or captured by Windows —
+                they have no composited pixels. Saying so beats leaving the user
+                wondering why most of their windows are missing. */}
+            {!loading && tab === 'window' && (
+              <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
+                Minimized windows can’t be recorded and won’t appear here. Restore the
+                window, then press Refresh.
+              </Text>
+            )}
+
             {loading ? (
               <div className={s.center}>
                 <Spinner size="tiny" label="Finding sources…" />

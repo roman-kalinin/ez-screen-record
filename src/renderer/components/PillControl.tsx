@@ -28,8 +28,11 @@ const useStyles = makeStyles({
     background: tokens.colorNeutralBackground4,
   },
   // "off" reads as a warning state, matching Meet's muted-red treatment.
+  // A literal colour rather than a theme token: the toolbar renders over the
+  // user's own screen on a dark bar, where the token resolved to something
+  // barely distinguishable from the enabled state.
   pillOff: {
-    background: tokens.colorPaletteRedBackground3,
+    background: '#c42b1c',
   },
   chevron: {
     display: 'grid',
