@@ -45,10 +45,19 @@ const useStyles = makeStyles({
     overflow: 'hidden',
     cursor: 'pointer',
     background: tokens.colorNeutralBackground4,
+    // A native <button> does not inherit text colour — it falls back to the
+    // UA default, which is black. On the dark surface that rendered the window
+    // titles as near-invisible black-on-grey, so the colour is set explicitly
+    // rather than left to inheritance.
+    color: tokens.colorNeutralForeground1,
     padding: 0,
     textAlign: 'left',
     display: 'flex',
     flexDirection: 'column',
+    // The same applies to the font: a native button uses the system UI font at
+    // 13.33px unless told otherwise, which is why these labels did not match
+    // the rest of the dialog.
+    fontFamily: tokens.fontFamilyBase,
     ':hover': { background: tokens.colorNeutralBackground4Hover },
   },
   cardActive: {
