@@ -317,6 +317,20 @@ function createCameraOverlayWindow(display: Electron.Display): BrowserWindow {
  */
 let hideToolbarFromCapture = true;
 
+/**
+ * (Re)apply the toolbar's exclusion from screen capture.
+ *
+ * Called after every show and after every click-through toggle, because both
+ * drop the window style the exclusion depends on. Cheap enough to be worth
+ * doing defensively rather than reasoning about which call cleared it.
+ */
+function applyToolbarProtection(): void {
+  if (process.env.EZ_NO_CONTENT_PROTECTION) return;
+  if (!toolbarWindow || toolbarWindow.isDestroyed()) return;
+  if (!toolbarWindow.isVisible()) return;
+  toolbarWindow.setContentProtection(hideToolbarFromCapture);
+}
+
 /** Whether the user pinned the window, so toolbar mode does not un-pin it. */
 let userPinnedOnTop = false;
 
@@ -361,6 +375,22 @@ function createToolbarWindow(display: Electron.Display): BrowserWindow {
     },
   });
 
+  // Force the window permanently layered.
+  //
+  // Electron implements content protection as SetWindowDisplayAffinity with
+  // WDA_EXCLUDEFROMCAPTURE, and only keeps it working while the window has
+  // WS_EX_LAYERED. `setIgnoreMouseEvents(false)` clears that style — and this
+  // window toggles click-through constantly, every time the pointer crosses the
+  // bar. Each of those calls silently undid the protection, which is why the
+  // toolbar ended up in recordings while the main window (which never toggles
+  // click-through) has always stayed out of them.
+  //
+  // setOpacity makes Electron mark the window layered for good, so its own
+  // `if (layered_) ex_style |= WS_EX_LAYERED` re-adds the style on every
+  // subsequent call. 0.99 rather than 1.0 because 1.0 is treated as "not
+  // transparent" and skips the layered path.
+  toolbarWindow.setOpacity(0.99);
+
   toolbarWindow.loadURL(rendererUrl('toolbar'));
   toolbarWindow.setAlwaysOnTop(true, 'screen-saver');
   toolbarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -391,10 +421,10 @@ function enterToolbarMode() {
   // if anything went wrong there was no way to stop the take at all.
   const win = createToolbarWindow(screen.getPrimaryDisplay());
   win.setBounds(screen.getPrimaryDisplay().bounds);
-  if (!process.env.EZ_NO_CONTENT_PROTECTION) {
-    win.setContentProtection(hideToolbarFromCapture);
-  }
   win.showInactive();
+  // AFTER showInactive, not before: hide() clears the display affinity, and
+  // re-applying it while the window is still hidden does not take.
+  applyToolbarProtection();
   // Re-assert: another always-on-top window (the camera bubble) may have been
   // shown after this one was created, which would otherwise leave the bar
   // underneath it.
@@ -612,11 +642,8 @@ function registerIpc() {
   /** Whether the toolbar is invisible to screen capture during a take. */
   ipcMain.handle('win:setHideFromCapture', (_e, hide: boolean) => {
     hideToolbarFromCapture = hide;
-    if (toolbarWindow && !toolbarWindow.isDestroyed() &&
-        !process.env.EZ_NO_CONTENT_PROTECTION) {
-      // Applies immediately when toggled mid-take.
-      toolbarWindow.setContentProtection(hide);
-    }
+    // Applies immediately when toggled mid-take.
+    applyToolbarProtection();
     return hide;
   });
 
@@ -628,6 +655,11 @@ function registerIpc() {
   ipcMain.handle('toolbar:setInteractive', (_e, interactive: boolean) => {
     if (!toolbarWindow || toolbarWindow.isDestroyed()) return false;
     toolbarWindow.setIgnoreMouseEvents(!interactive, { forward: true });
+    // This call clears WS_EX_LAYERED, which the capture exclusion depends on,
+    // so the exclusion has to be put back. The renderer toggles this on every
+    // pointer move across the bar, so without this the toolbar reverts to
+    // being recordable within a second of the user reaching for it.
+    applyToolbarProtection();
     return true;
   });
 

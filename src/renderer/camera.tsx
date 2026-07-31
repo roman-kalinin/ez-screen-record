@@ -66,16 +66,31 @@ function CameraBubble() {
         setHasFeed(false);
         return;
       }
-      // Already streaming this device — nothing to do.
-      const current = streamRef.current?.getVideoTracks()[0]?.getSettings().deviceId;
-      if (streamRef.current && current === deviceId) return;
 
+      // Only skip when the held stream is genuinely LIVE on this device.
+      // Checking the device id alone was not enough: after a failed switch the
+      // ref still pointed at stopped tracks, so switching back to a working
+      // camera matched here and returned early, and the bubble stayed dead for
+      // the rest of the session.
+      const track = streamRef.current?.getVideoTracks()[0];
+      if (track && track.readyState === 'live' && track.getSettings().deviceId === deviceId) {
+        return;
+      }
+
+      // Release the old device BEFORE asking for the new one, and clear the ref
+      // with it — a stale ref is what made the failure permanent. Some webcams
+      // also refuse a second open while the first is still held.
       streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+      setHasFeed(false);
+
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } },
         });
+        // A newer switch may have started while this was in flight; that one
+        // owns the device now.
         if (cancelled) {
           stream.getTracks().forEach((t) => t.stop());
           return;
@@ -85,8 +100,11 @@ function CameraBubble() {
           videoRef.current.srcObject = stream;
           await videoRef.current.play().catch(() => {});
         }
-        setHasFeed(true);
+        if (!cancelled) setHasFeed(true);
       } catch {
+        // Leave the ref null so the next attempt actually retries instead of
+        // matching against a dead stream.
+        streamRef.current = null;
         setHasFeed(false);
       }
     }

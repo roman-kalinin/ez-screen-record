@@ -586,6 +586,18 @@ export function App() {
         await window.ez.cameraOverlay.send('cameraOverlay:config', cam);
       }
 
+      // Put the toolbar up BEFORE ffmpeg starts capturing.
+      //
+      // Doing it afterwards left the bar visible to the capture for the first
+      // moments of the take: recordings began with the toolbar on screen
+      // showing 00:00, even though it is content-protected. Protection is
+      // applied when the window is created, but the window still has to be
+      // shown and composited, and ffmpeg was already running by then.
+      stateRef.current = 'recording';
+      pushToolbarState();
+      void window.ez.toolbar.send('toolbar:elapsed', 0);
+      await window.ez.window.setToolbarMode(true);
+
       const res = await window.ez.native.start({
         fps: cfg.fps,
         height: cfg.resolution === 'source' ? undefined : Number(cfg.resolution),
@@ -599,6 +611,9 @@ export function App() {
       });
 
       if (!res.ok) {
+        // Put everything back — the toolbar is already up at this point.
+        stateRef.current = 'idle';
+        void window.ez.window.setToolbarMode(false);
         void window.ez.cameraOverlay.hide();
         notify('Could not start recording', res.error, 'error');
         setState('idle');
@@ -606,16 +621,6 @@ export function App() {
       }
       nativeStartRef.current = Date.now();
       setState('recording');
-      // Give the toolbar its state BEFORE showing it, so it paints filled in
-      // rather than blank. stateRef is updated by hand because the setState
-      // above has not committed yet, and the toolbar decides what to render
-      // from exactly this value.
-      stateRef.current = 'recording';
-      pushToolbarState();
-      void window.ez.toolbar.send('toolbar:elapsed', 0);
-      // Collapse to the floating toolbar, Zoom-style: the preview would only be
-      // showing the desktop that is already on screen.
-      void window.ez.window.setToolbarMode(true);
       return;
     }
 

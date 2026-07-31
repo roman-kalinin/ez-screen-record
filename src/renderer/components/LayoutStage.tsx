@@ -226,6 +226,16 @@ export function LayoutStage({
         setHasCameraFeed(false);
         return;
       }
+      // Detach the previous stream before opening the next device. Cleanup
+      // stops the old tracks, but it runs after this effect has already asked
+      // for the new ones, so without this both are briefly open — and some
+      // webcams refuse the second open while the first is still held.
+      if (camRef.current?.srcObject) {
+        (camRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
+        camRef.current.srcObject = null;
+      }
+      setHasCameraFeed(false);
+
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
@@ -242,7 +252,7 @@ export function LayoutStage({
           camRef.current.srcObject = stream;
           await camRef.current.play().catch(() => {});
         }
-        setHasCameraFeed(true);
+        if (!cancelled) setHasCameraFeed(true);
       } catch {
         // Preview is best-effort; recording reports its own errors. Keep the
         // frame hidden so the user isn't shown a box that will never fill.
