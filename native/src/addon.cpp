@@ -97,10 +97,134 @@ Napi::Value SelfTest(const Napi::CallbackInfo& info) {
   return Napi::Number::New(env, static_cast<double>(total));
 }
 
+
+/**
+ * Capture the real screen through WGC and encode it, at a fixed cadence.
+ *
+ * This is the shape of the real recorder: the capture thread publishes into a
+ * latest-wins slot and the loop below samples it on a timer, re-submitting the
+ * previous frame when nothing new arrived. WGC only delivers on content
+ * change, so without that re-submission the stream would be variable-rate and
+ * a raw H.264 pipe has nowhere to record a timestamp.
+ */
+Napi::Value CaptureTest(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  const std::string outPath = info[0].As<Napi::String>().Utf8Value();
+  const uint32_t fps = info[1].As<Napi::Number>().Uint32Value();
+  const uint32_t seconds = info[2].As<Napi::Number>().Uint32Value();
+
+  ComPtr<ID3D11Device> device;
+  ComPtr<ID3D11DeviceContext> context;
+  D3D_FEATURE_LEVEL level;
+  if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                               D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
+                               D3D11_SDK_VERSION, &device, &level, &context))) {
+    Napi::Error::New(env, "D3D11CreateDevice failed").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+
+  // WGC and the encoder must share one device or NVENC rejects the texture.
+  ez::ScreenCapture capture;
+  std::string err;
+  if (!capture.Start(device.Get(), 0, fps, true, &err)) {
+    Napi::Error::New(env, err).ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+
+  // Give the capture a moment to report the display size and produce a frame.
+  Sleep(300);
+
+  ez::EncoderConfig cfg;
+  cfg.width = capture.Width();
+  cfg.height = capture.Height();
+  cfg.fps = fps;
+  cfg.cq = 16;
+  cfg.chroma444 = true;
+
+  ez::NvencEncoder enc;
+  if (!enc.Open(device.Get(), cfg, &err)) {
+    capture.Stop();
+    Napi::Error::New(env, err).ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+
+  std::ofstream out(outPath, std::ios::binary);
+  size_t total = 0;
+  enc.SetPacketCallback([&](const uint8_t* d, size_t n, bool) {
+    out.write(reinterpret_cast<const char*>(d), n);
+    total += n;
+  });
+
+  // A texture we own, so the encoder never reads a surface the capture pool
+  // may already have recycled.
+  D3D11_TEXTURE2D_DESC desc{};
+  desc.Width = cfg.width; desc.Height = cfg.height;
+  desc.MipLevels = 1; desc.ArraySize = 1;
+  desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+  desc.SampleDesc.Count = 1;
+  desc.Usage = D3D11_USAGE_DEFAULT;
+  desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+  ComPtr<ID3D11Texture2D> encodeTex;
+  if (FAILED(device->CreateTexture2D(&desc, nullptr, &encodeTex))) {
+    capture.Stop();
+    Napi::Error::New(env, "CreateTexture2D failed").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+
+  const uint32_t totalFrames = fps * seconds;
+  uint32_t encoded = 0, fresh = 0;
+  uint64_t lastGeneration = 0;
+
+  LARGE_INTEGER freq, start;
+  QueryPerformanceFrequency(&freq);
+  QueryPerformanceCounter(&start);
+
+  for (uint32_t i = 0; i < totalFrames; ++i) {
+    // Absolute deadlines from a fixed epoch: adding deltas to "now" would let
+    // rounding error accumulate over a long take.
+    const double deadline = static_cast<double>(i) / fps;
+    for (;;) {
+      LARGE_INTEGER now;
+      QueryPerformanceCounter(&now);
+      const double elapsed =
+          static_cast<double>(now.QuadPart - start.QuadPart) / freq.QuadPart;
+      if (elapsed >= deadline) break;
+      const double remaining = deadline - elapsed;
+      if (remaining > 0.002) Sleep(1);
+    }
+
+    auto frame = capture.Slot().Acquire();
+    const uint64_t generation = capture.Slot().Generation();
+    if (frame) {
+      if (generation != lastGeneration) {
+        ++fresh;
+        lastGeneration = generation;
+      }
+      context->CopyResource(encodeTex.Get(), frame->texture.Get());
+    }
+    if (!enc.Encode(encodeTex.Get(), 0, i, &err)) break;
+    ++encoded;
+  }
+
+  enc.Flush();
+  enc.Close();
+  capture.Stop();
+  out.close();
+
+  Napi::Object result = Napi::Object::New(env);
+  result.Set("bytes", Napi::Number::New(env, static_cast<double>(total)));
+  result.Set("encoded", Napi::Number::New(env, encoded));
+  result.Set("freshFrames", Napi::Number::New(env, fresh));
+  result.Set("width", Napi::Number::New(env, cfg.width));
+  result.Set("height", Napi::Number::New(env, cfg.height));
+  return result;
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("isSupported", Napi::Function::New(env, IsSupported));
   exports.Set("hasMinUpdateInterval", Napi::Function::New(env, HasMinUpdateInterval));
   exports.Set("hasNvenc", Napi::Function::New(env, HasNvenc));
+  exports.Set("captureTest", Napi::Function::New(env, CaptureTest));
   exports.Set("selfTest", Napi::Function::New(env, SelfTest));
   return exports;
 }
