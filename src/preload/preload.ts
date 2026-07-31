@@ -5,6 +5,9 @@ import type { AppSettings, CaptureSource, SaveResult } from '../shared/types';
  *  Node integration stays off; everything crosses through here. */
 const api = {
   listSources: (): Promise<CaptureSource[]> => ipcRenderer.invoke('sources:list'),
+  /** Un-minimize a window so it can be captured. */
+  restoreWindow: (sourceId: string): Promise<boolean> =>
+    ipcRenderer.invoke('sources:restoreWindow', sourceId),
 
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
   setSettings: (s: AppSettings): Promise<boolean> => ipcRenderer.invoke('settings:set', s),

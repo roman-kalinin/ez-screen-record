@@ -1414,9 +1414,26 @@ export function App() {
         sources={sources}
         loading={sourcesLoading}
         value={settings.recording.screenSourceId}
-        onChange={(id) =>
-          setSettings((p) => ({ ...p, recording: { ...p.recording, screenSourceId: id } }))
-        }
+        onChange={async (id) => {
+          // A minimized window has nothing to capture until it is restored;
+          // do that before it becomes the selected source. `id` is null when
+          // the user clears the selection.
+          const picked = id ? sources.find((x) => x.id === id) : undefined;
+          if (picked?.minimized && id) {
+            const ok = await window.ez.restoreWindow(id);
+            if (!ok) {
+              notify(
+                'Could not restore that window',
+                'Open it manually, then press Refresh.',
+                'warning',
+              );
+              return;
+            }
+            // Its thumbnail and real source id only exist once it is back.
+            await refreshSources();
+          }
+          setSettings((p) => ({ ...p, recording: { ...p.recording, screenSourceId: id } }));
+        }}
         onRefresh={refreshSources}
       />
 

@@ -7,6 +7,11 @@ export interface CaptureSource {
   /** Present for screens, absent for windows. */
   displayId?: string;
   kind: 'screen' | 'window';
+  /**
+   * The window is minimized, so it has no thumbnail and cannot be captured
+   * until it is restored. Selecting one restores it first.
+   */
+  minimized?: boolean;
 }
 
 export interface MediaDevice {

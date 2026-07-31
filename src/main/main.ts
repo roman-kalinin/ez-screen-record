@@ -15,6 +15,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { CaptureSource, AppSettings } from '../shared/types';
 import { loadSettings, saveSettings, defaultOutputDir } from './settings';
+import { listAllWindows, restoreWindowForCapture } from './window-list';
 import { remuxToMp4 } from './remux';
 import {
   NativeRecorder,
@@ -421,7 +422,8 @@ function registerIpc() {
       thumbnailSize: { width: 320, height: 200 },
       fetchWindowIcons: false,
     });
-    return sources
+
+    const listed = sources
       // Filter out our own windows so the user can't record the recorder.
       .filter((s) => !/^Ez Screen Record/.test(s.name))
       .map((s) => ({
@@ -430,7 +432,37 @@ function registerIpc() {
         thumbnailDataUrl: s.thumbnail.toDataURL(),
         displayId: s.display_id || undefined,
         kind: s.id.startsWith('screen:') ? ('screen' as const) : ('window' as const),
+        minimized: false,
       }));
+
+    // Add back the minimized windows Chromium dropped. They have no thumbnail
+    // (nothing is composited while minimized) and are marked so the picker can
+    // show them differently; selecting one restores it first.
+    const seen = new Set(
+      listed.map((s) => s.id.split(':')[1]).filter(Boolean),
+    );
+    for (const win of await listAllWindows()) {
+      if (!win.minimized) continue;
+      if (seen.has(win.handle)) continue;
+      if (/^Ez Screen Record/.test(win.title)) continue;
+      listed.push({
+        id: `window:${win.handle}:0`,
+        name: win.title,
+        thumbnailDataUrl: '',
+        displayId: undefined,
+        kind: 'window' as const,
+        minimized: true,
+      });
+    }
+
+    return listed;
+  });
+
+  /** Un-minimize a window so it can be captured. See window-list.ts. */
+  ipcMain.handle('sources:restoreWindow', async (_e, sourceId: string) => {
+    const handle = sourceId.split(':')[1];
+    if (!handle) return false;
+    return restoreWindowForCapture(handle);
   });
 
   ipcMain.handle('settings:get', () => loadSettings());

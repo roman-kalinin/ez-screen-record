@@ -61,6 +61,15 @@ const useStyles = makeStyles({
     display: 'block',
     background: '#000',
   },
+  // Same footprint as a thumbnail so the grid stays even.
+  minimizedThumb: {
+    width: '100%',
+    aspectRatio: '16 / 10',
+    display: 'grid',
+    placeItems: 'center',
+    background: tokens.colorNeutralBackground4,
+    color: tokens.colorNeutralForeground3,
+  },
   label: {
     padding: '6px 8px',
     display: 'block',
@@ -127,13 +136,10 @@ export function SourceDialog({
               </Button>
             </div>
 
-            {/* Minimized windows cannot be enumerated or captured by Windows —
-                they have no composited pixels. Saying so beats leaving the user
-                wondering why most of their windows are missing. */}
-            {!loading && tab === 'window' && (
+            {!loading && tab === 'window' && filtered.some((x) => x.minimized) && (
               <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
-                Minimized windows can’t be recorded and won’t appear here. Restore the
-                window, then press Refresh.
+                Minimized windows are listed without a preview. Picking one reopens it,
+                since Windows can’t record a minimized window.
               </Text>
             )}
 
@@ -157,7 +163,16 @@ export function SourceDialog({
                     }}
                     title={src.name}
                   >
-                    <img className={s.thumb} src={src.thumbnailDataUrl} alt="" />
+                    {/* Minimized windows have no thumbnail — nothing is
+                        composited while minimized — so show a placeholder
+                        rather than a broken image. */}
+                    {src.minimized ? (
+                      <div className={s.minimizedThumb}>
+                        <Text size={100}>Minimized</Text>
+                      </div>
+                    ) : (
+                      <img className={s.thumb} src={src.thumbnailDataUrl} alt="" />
+                    )}
                     <Text className={s.label} size={100}>
                       {src.name}
                     </Text>
