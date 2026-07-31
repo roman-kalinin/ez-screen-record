@@ -385,11 +385,20 @@ function createToolbarWindow(display: Electron.Display): BrowserWindow {
 function enterToolbarMode() {
   if (!controlWindow || controlWindow.isDestroyed()) return;
 
+  // The window is built at startup and kept hidden, so this is just a show.
+  // Creating it here instead meant loading React and the whole Fluent bundle
+  // at the moment recording began: the bar took visible seconds to appear, and
+  // if anything went wrong there was no way to stop the take at all.
   const win = createToolbarWindow(screen.getPrimaryDisplay());
+  win.setBounds(screen.getPrimaryDisplay().bounds);
   if (!process.env.EZ_NO_CONTENT_PROTECTION) {
     win.setContentProtection(hideToolbarFromCapture);
   }
   win.showInactive();
+  // Re-assert: another always-on-top window (the camera bubble) may have been
+  // shown after this one was created, which would otherwise leave the bar
+  // underneath it.
+  win.setAlwaysOnTop(true, 'screen-saver');
   // The main window steps aside for the take; the toolbar replaces it.
   controlWindow.hide();
 }
@@ -829,6 +838,9 @@ if (!gotLock) {
     registerIpc();
     createControlWindow();
     createOverlayWindow();
+    // Built up front and kept hidden so pressing record shows it instantly,
+    // rather than paying for React and the Fluent bundle mid-take.
+    createToolbarWindow(screen.getPrimaryDisplay());
     registerHotkeys();
 
     // Fires for both light/dark switches and accent-colour changes.

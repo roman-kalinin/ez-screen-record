@@ -511,6 +511,23 @@ export function App() {
     [notify, dispatchToast],
   );
 
+  const pushToolbarState = useCallback(() => {
+    void window.ez.toolbar.send('toolbar:state', {
+      state: stateRef.current,
+      drawing: drawingRef.current,
+      micEnabled: settingsRef.current.recording.micEnabled,
+      micDeviceId: settingsRef.current.recording.micDeviceId,
+      mics: micsRef.current,
+      cameraEnabled: settingsRef.current.camera.enabled,
+      cameraDeviceId: settingsRef.current.camera.deviceId,
+      cams: camsRef.current,
+      sourceName:
+        sourcesRef.current.find(
+          (x) => x.id === settingsRef.current.recording.screenSourceId,
+        )?.name ?? '',
+    });
+  }, []);
+
   const beginRecording = useCallback(async () => {
     const cfg = settingsRef.current.recording;
 
@@ -588,10 +605,17 @@ export function App() {
         return;
       }
       nativeStartRef.current = Date.now();
+      setState('recording');
+      // Give the toolbar its state BEFORE showing it, so it paints filled in
+      // rather than blank. stateRef is updated by hand because the setState
+      // above has not committed yet, and the toolbar decides what to render
+      // from exactly this value.
+      stateRef.current = 'recording';
+      pushToolbarState();
+      void window.ez.toolbar.send('toolbar:elapsed', 0);
       // Collapse to the floating toolbar, Zoom-style: the preview would only be
       // showing the desktop that is already on screen.
       void window.ez.window.setToolbarMode(true);
-      setState('recording');
       return;
     }
 
@@ -766,6 +790,12 @@ export function App() {
   // and a re-render of the toolbar window 5x a second, for the entire take.
   // That showed up in recordings as a ~300ms stall every ~0.5s, right through.
   // This effect now fires only when something a human changed actually changes.
+  // The toolbar asks for state when it mounts; without this it would render
+  // nothing until the next change happened to be pushed.
+  useEffect(() => window.ez.on('toolbar:requestState', () => pushToolbarState()), [
+    pushToolbarState,
+  ]);
+
   useEffect(() => {
     if (state !== 'recording' && state !== 'paused') return;
     void window.ez.toolbar.send('toolbar:state', {

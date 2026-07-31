@@ -195,6 +195,13 @@ function Toolbar() {
   // State and clock arrive separately so the once-a-second tick does not carry
   // the device lists with it — see the note in App.tsx.
   useEffect(() => window.ez.on('toolbar:state', (next: ToolbarState) => setSt(next)), []);
+
+  // Ask for the current state on mount. The control window only pushes when
+  // something changes, so a toolbar that came up after the last push would sit
+  // there rendering nothing — with no way to stop the recording.
+  useEffect(() => {
+    void window.ez.control.send('toolbar:requestState');
+  }, []);
   useEffect(
     () => window.ez.on('toolbar:elapsed', (seconds: number) => setSeconds(seconds)),
     [],
