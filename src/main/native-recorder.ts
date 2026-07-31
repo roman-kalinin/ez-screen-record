@@ -3,6 +3,16 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { hasFfmpeg, ffmpegPath } from './remux';
+import {
+  CAPTURE_IS_HW,
+  CAPTURE_PIX_FMT,
+  IS_MAC,
+  MAX_HW_PIX_FMT,
+  cameraInputArgs,
+  hardwareEncoder,
+  micInputArgs,
+  screenInputArgs,
+} from './capture-backend';
 
 /**
  * GPU-composited capture: the same architecture OBS uses, driven by ffmpeg.
@@ -81,6 +91,11 @@ export interface NativeCameraOptions {
 export interface NativeRecordOptions {
   outputPath: string;
   fps: number;
+  /**
+   * Which display to capture, in the platform's own terms: a ddagrab output
+   * index on Windows, an avfoundation device index on macOS.
+   */
+  displayId?: number;
   /** Output height; omitted keeps the capture's native size. */
   height?: number;
   quality: QualityPreset;
@@ -123,6 +138,34 @@ function x264PresetFor(width: number, height: number, fps: number, base: string)
   return base;
 }
 
+/**
+ * Target bitrate in Mbps for a bitrate-controlled encoder (VideoToolbox).
+ *
+ * CRF/CQ encoders pick their own bitrate from a quality target; VideoToolbox
+ * has no true constant-quality mode for H.264, so the rate has to be chosen
+ * explicitly. Scaled by pixel rate so 4K120 is not starved at the same number
+ * that suits 1080p30.
+ *
+ * Deliberately generous. The macOS path already gives up 4:4:4 chroma, which is
+ * the thing that keeps small coloured text sharp; spending bitrate is the only
+ * compensation available, and a screen recording that smears during a scroll is
+ * worse than a large file.
+ */
+function bitrateFor(
+  width: number,
+  height: number,
+  fps: number,
+  quality: QualityPreset,
+): number {
+  // Bits per pixel per frame, tuned for screen content (sharp edges, large flat
+  // areas) rather than camera footage, which tolerates far less.
+  const bpp = quality === 'high' ? 0.13 : quality === 'balanced' ? 0.09 : 0.06;
+  const mbps = (width * height * fps * bpp) / 1_000_000;
+  // Floor keeps small/low-fps takes from looking soft; ceiling avoids files
+  // nothing will play smoothly.
+  return Math.round(Math.min(Math.max(mbps, 8), 200));
+}
+
 export class NativeRecorder {
   private proc: ChildProcess | null = null;
   private outputPath = '';
@@ -140,7 +183,25 @@ export class NativeRecorder {
   static async isAvailable(): Promise<boolean> {
     if (!(await hasFfmpeg())) return false;
     // libplacebo is an optional build flag; without it there is no GPU
-    // compositor and this whole path is unavailable.
+    // compositor. That only disables COMPOSITING (camera and image overlays),
+    // not capture itself — a screen-only take never enters the Vulkan path.
+    //
+    // This matters on macOS, where Vulkan runs through MoltenVK and many ffmpeg
+    // builds ship without libplacebo at all. Gating the whole engine on it
+    // would disable recording entirely on those machines for a filter that a
+    // plain screen capture never uses.
+    return true;
+  }
+
+  /**
+   * Can camera and image overlays be burned into the recording?
+   *
+   * When false the recorder still captures, but overlays have to be dropped —
+   * the caller should keep the on-screen camera bubble instead, which is
+   * captured as part of the desktop and needs no compositor.
+   */
+  static async canComposite(): Promise<boolean> {
+    if (!(await hasFfmpeg())) return false;
     return hasFilter('libplacebo');
   }
 
@@ -148,15 +209,32 @@ export class NativeRecorder {
     if (this.proc) throw new Error('A native recording is already running.');
     if (!(await hasFfmpeg())) {
       throw new Error(
-        'ffmpeg was not found. Install a full ffmpeg build (winget install Gyan.FFmpeg) ' +
-          'or place ffmpeg.exe in the app’s resources/ffmpeg folder.',
+        IS_MAC
+          ? 'ffmpeg was not found. Install it (brew install ffmpeg) or place the ffmpeg binary in the app’s resources/ffmpeg folder.'
+          : 'ffmpeg was not found. Install a full ffmpeg build (winget install Gyan.FFmpeg) or place ffmpeg.exe in the app’s resources/ffmpeg folder.',
       );
     }
 
     fs.mkdirSync(path.dirname(opts.outputPath), { recursive: true });
     this.outputPath = opts.outputPath;
 
-    const q = PRESETS[opts.quality];
+    const preset = PRESETS[opts.quality];
+
+    // Resolve the encoder BEFORE building the filter graph.
+    //
+    // The graph's final `format=` has to match what the encoder accepts. When
+    // VideoToolbox clamps 4:4:4 down to 4:2:0 but the graph still hands it
+    // yuv444p, ffmpeg fails on the format mismatch — so the chroma decision has
+    // to be made once, here, and used by both halves.
+    const macEncoder = IS_MAC ? await hardwareEncoder() : null;
+    const useNvenc = !IS_MAC && (await hasNvenc444());
+
+    const q = {
+      ...preset,
+      // VideoToolbox H.264 has no 4:4:4 mode at all on macOS.
+      pixFmt: macEncoder && preset.pixFmt === 'yuv444p' ? MAX_HW_PIX_FMT : preset.pixFmt,
+    };
+
     const args: string[] = ['-y'];
 
     // Is there anything to GPU-composite? With no camera and no images the
@@ -191,7 +269,7 @@ export class NativeRecorder {
     // faster and burns GPU time re-checking for changes that have not happened.
     // When the desktop is idle nobody wants 120 recorded frames of nothing, and
     // when it is busy the requested rate is already met.
-    args.push('-f', 'lavfi', '-i', `ddagrab=output_idx=0:framerate=${opts.fps}`);
+    args.push(...screenInputArgs(opts.fps, opts.displayId ?? 0));
     let idx = 1;
 
     const camIdx = opts.camera ? idx++ : -1;
@@ -202,11 +280,7 @@ export class NativeRecorder {
       // 30fps while the screen may be captured at 60. Letting the camera
       // negotiate its own mode and having the filter graph reconcile the rates
       // is both more robust and works with any device.
-      args.push(
-        '-f', 'dshow',
-        '-rtbufsize', '512M',
-        '-i', `video=${opts.camera.deviceName}`,
-      );
+      args.push(...cameraInputArgs(opts.camera.deviceName));
     }
 
     const imageIdxs: number[] = [];
@@ -217,25 +291,21 @@ export class NativeRecorder {
 
     const micIdx = opts.micDeviceName ? idx++ : -1;
     if (opts.micDeviceName) {
-      args.push(
-        '-f', 'dshow',
-        // 50ms audio chunks. This single option is worth more than it looks:
-        // dshow's default buffer is large enough that each refill blocked the
-        // capture path and stalled VIDEO in a regular rhythm — recordings had a
-        // ~300ms freeze roughly every half second, for their whole length.
-        //
-        // Measured at 1440p120, same machine, same moment, mic the only
-        // difference:
-        //   no mic                       70fps,  10 drops,  2 stalls
-        //   mic, default buffer          38fps, 194 drops, 27 stalls
-        //   mic, audio_buffer_size 50    81fps,  14 drops,  2 stalls
-        //
-        // `-thread_queue_size` barely helped (27 -> 23), because the queue was
-        // never the constraint; the buffer refill was.
-        '-audio_buffer_size', '50',
-        '-rtbufsize', '256M',
-        '-i', `audio=${opts.micDeviceName}`,
-      );
+      // On Windows this carries `-audio_buffer_size 50`, which is worth more
+      // than it looks: dshow's default buffer is large enough that each refill
+      // blocked the capture path and stalled VIDEO in a regular rhythm —
+      // recordings had a ~300ms freeze roughly every half second, for their
+      // whole length.
+      //
+      // Measured at 1440p120, same machine, same moment, mic the only
+      // difference:
+      //   no mic                       70fps,  10 drops,  2 stalls
+      //   mic, default buffer          38fps, 194 drops, 27 stalls
+      //   mic, audio_buffer_size 50    81fps,  14 drops,  2 stalls
+      //
+      // `-thread_queue_size` barely helped (27 -> 23), because the queue was
+      // never the constraint; the buffer refill was.
+      args.push(...micInputArgs(opts.micDeviceName));
     }
 
     // --- Filter graph ------------------------------------------------------
@@ -266,8 +336,14 @@ export class NativeRecorder {
     // applied only on the libplacebo path, which is the only place it is
     // needed. Screen-only takes skip it and come out clean.
     const scaleStep = outH ? `,scale=-2:${outH}:flags=lanczos` : '';
+    // ddagrab hands over a D3D11 texture, so it must come off the GPU before any
+    // CPU filter can touch it. avfoundation already delivers system-memory
+    // frames — asking to download one that was never uploaded is a hard error,
+    // so the step is omitted entirely rather than made conditional inside the
+    // graph.
+    const download = CAPTURE_IS_HW ? `hwdownload,format=${CAPTURE_PIX_FMT}` : `format=${CAPTURE_PIX_FMT}`;
     if (composites) {
-      chains.push(`[0:v]hwdownload,format=bgra${scaleStep},format=rgba,hwupload[bg]`);
+      chains.push(`[0:v]${download}${scaleStep},format=rgba,hwupload[bg]`);
       layers.push('[bg]');
     }
 
@@ -327,7 +403,7 @@ export class NativeRecorder {
     } else {
       // Nothing to composite: straight off the GPU and into the encoder. No
       // Vulkan, no rgba round-trip — correct colours and a clean cursor.
-      chains.push(`[0:v]hwdownload,format=bgra${scaleStep},format=${q.pixFmt}[out]`);
+      chains.push(`[0:v]${download}${scaleStep},format=${q.pixFmt}[out]`);
     }
 
     args.push('-filter_complex', chains.join(';'), '-map', '[out]');
@@ -339,8 +415,34 @@ export class NativeRecorder {
     // ~20-30 genuinely-unique frames per second. NVENC encodes on the GPU and
     // hands the CPU back to the preview. Quality is unchanged: high444p keeps
     // full 4:4:4 chroma, and CQ is the same rate-control idea as CRF.
-    const useNvenc = await hasNvenc444();
-    if (useNvenc) {
+    if (macEncoder) {
+      // VideoToolbox: Apple's hardware encoder, present on every Mac. It is
+      // **4:2:0 only** — there is no 4:4:4 H.264 path on macOS at all, so the
+      // Windows "visually lossless full chroma" promise cannot be kept here.
+      // `q.pixFmt` was already clamped above, so the graph and the encoder
+      // agree.
+      //
+      // Chroma is where screen-content quality is won or lost, and 4:2:0 has
+      // already given away three quarters of it. Bitrate is the only lever
+      // left, so it is set generously — scaled by pixel rate rather than fixed,
+      // since a 4K120 take needs far more than 1080p30 to look the same.
+      const mbps = bitrateFor(canvasW, canvasH, opts.fps, opts.quality);
+
+      args.push(
+        '-c:v', 'h264_videotoolbox',
+        '-b:v', `${mbps}M`,
+        // Ceiling well above the target: screen content is mostly static and
+        // then changes all at once, and a tight cap smears exactly those
+        // moments (scrolling text, window switches).
+        '-maxrate', `${Math.round(mbps * 1.5)}M`,
+        '-bufsize', `${mbps * 2}M`,
+        // Let the encoder use as much quality as the bitrate allows.
+        '-profile:v', 'high',
+        '-pix_fmt', q.pixFmt,
+        '-g', String(opts.fps * 2),
+        '-movflags', '+faststart',
+      );
+    } else if (useNvenc) {
       args.push(
         '-c:v', 'h264_nvenc',
         // 4:2:0 only for the 'compact' preset, matching x264's behaviour.
@@ -479,6 +581,15 @@ function explainFailure(stderr: string, code: number | null): string {
   if (/ddagrab|Desktop Duplication/i.test(stderr) && /error|failed/i.test(stderr)) {
     return 'Screen capture failed to start. This can happen on a locked screen or during a display change.';
   }
+  // macOS gates screen capture behind TCC. When permission is missing the
+  // failure is opaque — an input-open error naming the avfoundation device,
+  // with nothing about permissions — so it is worth translating.
+  if (IS_MAC && /avfoundation/i.test(stderr) && /error|failed|denied|cannot open/i.test(stderr)) {
+    if (/audio/i.test(stderr) && !/video/i.test(stderr)) {
+      return 'The microphone could not be opened. Grant Microphone access in System Settings › Privacy & Security, then restart the app.';
+    }
+    return 'Screen capture could not start. Grant Screen Recording access in System Settings › Privacy & Security, then restart the app — macOS only applies this permission on a fresh launch.';
+  }
   // Fall back to the last meaningful line rather than the whole banner.
   const lastLine =
     stderr
@@ -506,36 +617,120 @@ function hasFilter(name: string): Promise<boolean> {
   });
 }
 
-/** dshow device names — ffmpeg addresses devices by name, not by id. */
-export async function listDshowDevices(): Promise<{ audio: string[]; video: string[] }> {
+/**
+ * Capture devices as ffmpeg addresses them.
+ *
+ * The identifier is what must be handed back to the recorder, and it differs by
+ * platform: dshow addresses devices by NAME, avfoundation by INDEX. Callers
+ * must treat `id` as opaque and never assume it is one or the other.
+ */
+export interface CaptureDevice {
+  /** What to pass to the recorder: a dshow name, or an avfoundation index. */
+  id: string;
+  /** Human-readable name for the UI. */
+  label: string;
+}
+
+/** Run a device-listing command and collect stderr, where ffmpeg prints it. */
+function listDevicesRaw(args: string[]): Promise<string> {
   return new Promise((resolve) => {
-    const proc = spawn(
-      ffmpegPath(),
-      ['-hide_banner', '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'],
-      { windowsHide: true },
-    );
+    const proc = spawn(ffmpegPath(), args, { windowsHide: true });
     let out = '';
     proc.stderr.on('data', (d) => (out += d));
-    proc.on('error', () => resolve({ audio: [], video: [] }));
-    proc.on('close', () => {
-      const audio: string[] = [];
-      const video: string[] = [];
-      // Lines look like:  [dshow @ ...] "Brio 100" (video)
-      const re = /"([^"]+)"\s*\((audio|video)\)/g;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(out))) {
-        (m[2] === 'audio' ? audio : video).push(m[1]);
-      }
-      resolve({
-        audio: [...new Set(audio)],
-        video: [...new Set(video)],
-      });
-    });
+    // `-list_devices` always exits non-zero (it never opens an input), so the
+    // exit code is not a failure signal here — the output is what matters.
+    proc.on('error', () => resolve(''));
+    proc.on('close', () => resolve(out));
     setTimeout(() => {
       proc.kill();
-      resolve({ audio: [], video: [] });
+      resolve(out);
     }, 6000);
   });
+}
+
+/**
+ * Enumerate cameras, microphones and (on macOS) capturable screens.
+ *
+ * macOS lists screens as video devices in the same numbering as cameras, which
+ * is why screens are separated out here rather than being left for the caller
+ * to guess at — picking the wrong index records a webcam instead of a display.
+ */
+export async function listCaptureDevices(): Promise<{
+  audio: CaptureDevice[];
+  video: CaptureDevice[];
+  screens: CaptureDevice[];
+}> {
+  if (IS_MAC) {
+    const out = await listDevicesRaw([
+      '-hide_banner', '-f', 'avfoundation', '-list_devices', 'true', '-i', '',
+    ]);
+
+    const video: CaptureDevice[] = [];
+    const screens: CaptureDevice[] = [];
+    const audio: CaptureDevice[] = [];
+
+    // Output is two labelled sections:
+    //   [AVFoundation indev @ ...] AVFoundation video devices:
+    //   [AVFoundation indev @ ...] [0] FaceTime HD Camera
+    //   [AVFoundation indev @ ...] [1] Capture screen 0
+    //   [AVFoundation indev @ ...] AVFoundation audio devices:
+    //   [AVFoundation indev @ ...] [0] MacBook Pro Microphone
+    let section: 'video' | 'audio' | null = null;
+    for (const line of out.split(/\r?\n/)) {
+      if (/AVFoundation video devices:/i.test(line)) {
+        section = 'video';
+        continue;
+      }
+      if (/AVFoundation audio devices:/i.test(line)) {
+        section = 'audio';
+        continue;
+      }
+      const m = /\[(\d+)\]\s+(.+?)\s*$/.exec(line.replace(/^\[[^\]]*\]\s*/, ''));
+      if (!m || !section) continue;
+
+      const device = { id: m[1], label: m[2] };
+      if (section === 'audio') audio.push(device);
+      // Screens are video devices too; the label is the only thing telling
+      // them apart.
+      else if (/capture screen/i.test(device.label)) screens.push(device);
+      else video.push(device);
+    }
+
+    return { audio, video, screens };
+  }
+
+  const out = await listDevicesRaw([
+    '-hide_banner', '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy',
+  ]);
+
+  const audio: CaptureDevice[] = [];
+  const video: CaptureDevice[] = [];
+  // Lines look like:  [dshow @ ...] "Brio 100" (video)
+  const re = /"([^"]+)"\s*\((audio|video)\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(out))) {
+    (m[2] === 'audio' ? audio : video).push({ id: m[1], label: m[1] });
+  }
+
+  const dedupe = (list: CaptureDevice[]) => {
+    const seen = new Set<string>();
+    return list.filter((d) => (seen.has(d.id) ? false : (seen.add(d.id), true)));
+  };
+
+  // Windows enumerates displays through ddagrab output indices, not through the
+  // device layer, so there is nothing to list here.
+  return { audio: dedupe(audio), video: dedupe(video), screens: [] };
+}
+
+/**
+ * Legacy name, kept because several call sites use it.
+ *
+ * Returns bare strings, which is only correct on Windows where the id and the
+ * label are the same. New code should prefer `listCaptureDevices`.
+ */
+export async function listDshowDevices(): Promise<{ audio: string[]; video: string[] }> {
+  const { audio, video } = await listCaptureDevices();
+  return { audio: audio.map((d) => d.id), video: video.map((d) => d.id) };
 }
 
 /** Back-compat helper for callers that only need microphones. */

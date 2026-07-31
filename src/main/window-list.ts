@@ -37,6 +37,11 @@ export interface ListedWindow {
  * accelerator is absent.
  */
 export function listAllWindows(): Promise<ListedWindow[]> {
+  // Windows-only by construction. On macOS `desktopCapturer` already returns
+  // minimized windows, so there is nothing to supplement — returning empty lets
+  // the caller fall through to Chromium's list rather than merging garbage.
+  if (process.platform !== 'win32') return Promise.resolve([]);
+
   const script = `
 Add-Type @"
 using System;
@@ -124,6 +129,10 @@ $out | ConvertTo-Json -Compress
  * cloaked, and a window the user can see beats a black rectangle.
  */
 export function restoreWindowForCapture(handle: string): Promise<boolean> {
+  // See listAllWindows: the minimized-window problem this works around is
+  // specific to WebRTC's enumeration filter on Windows.
+  if (process.platform !== 'win32') return Promise.resolve(false);
+
   const script = `
 Add-Type @"
 using System;

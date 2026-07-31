@@ -9,6 +9,7 @@ Run:  python tools/make-icon.py
 Outputs build/icon.png (512) and build/icon.ico (multi-size, for electron-builder).
 """
 
+import io
 import os
 from PIL import Image, ImageDraw
 
@@ -65,11 +66,68 @@ def render(size):
     return img.resize((size, size), Image.LANCZOS)
 
 
+def write_icns(path, master1024):
+    """
+    Write an .icns without depending on macOS's iconutil.
+
+    Pillow's ICNS *saver* is unavailable on most builds, so the container is
+    assembled by hand. The format is simple: an 8-byte 'icns' header followed by
+    length-prefixed chunks, each a PNG under a size-specific OSType. 'ic07'
+    upward accept PNG directly, which is every size that matters today.
+    """
+    import struct
+
+    # (OSType, pixel size). Retina variants share pixels with their 2x base.
+    entries = [
+        (b"ic07", 128),
+        (b"ic08", 256),
+        (b"ic09", 512),
+        (b"ic10", 1024),
+        (b"ic11", 32),
+        (b"ic12", 64),
+        (b"ic13", 256),
+        (b"ic14", 512),
+    ]
+
+    chunks = []
+    for ostype, size in entries:
+        buf = io.BytesIO()
+        master1024.resize((size, size), Image.LANCZOS).save(buf, format="PNG")
+        data = buf.getvalue()
+        chunks.append(ostype + struct.pack(">I", len(data) + 8) + data)
+
+    body = b"".join(chunks)
+    with open(path, "wb") as f:
+        f.write(b"icns" + struct.pack(">I", len(body) + 8) + body)
+
+
+def render_mac(size):
+    """
+    macOS variant.
+
+    Apple's grid leaves the icon inset within its canvas rather than filling it
+    edge to edge, and uses a much softer corner radius than Windows. Rendering
+    the Windows tile at full bleed on macOS makes it look oversized next to
+    every other icon in the Dock.
+    """
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    # ~82% of the canvas, which is close to Apple's own proportion.
+    inner = int(size * 0.82)
+    tile = render(inner)
+    off = (size - inner) // 2
+    canvas.paste(tile, (off, off), tile)
+    return canvas
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
 
     master = render(512)
     master.save(os.path.join(OUT, "icon.png"))
+
+    # macOS: inset on a transparent canvas, written as a multi-size .icns.
+    mac_master = render_mac(1024)
+    write_icns(os.path.join(OUT, "icon.icns"), mac_master)
 
     # Each ICO frame is rendered at its own size rather than scaled from the
     # 512 — the stroke width is proportional, so a downscaled 16px frame would

@@ -20,9 +20,9 @@ let resolvedFfmpeg: string | null = null;
  *
  * An installed app cannot assume ffmpeg is on PATH, so a bundled copy under
  * resources/ffmpeg wins when present. Note that `ffmpeg-static` is NOT a valid
- * source for it: this app needs `ddagrab`, `libplacebo` and `h264_nvenc`, and
- * that package ships a minimal build with none of them. Use a full build
- * (gyan.dev "full", or BtbN win64-gpl).
+ * source for it: on Windows this app needs `ddagrab`, `libplacebo` and
+ * `h264_nvenc`, and that package ships a minimal build with none of them. Use a
+ * full build (gyan.dev "full", or BtbN win64-gpl); on macOS, evermeet.cx.
  *
  * Falling back to PATH keeps `npm run dev` working without a vendored binary.
  */
@@ -37,14 +37,31 @@ export function ffmpegPath(): string {
     path.join(process.cwd(), 'resources', 'ffmpeg', exe),
   ];
 
-  resolvedFfmpeg = bundled.find((p) => {
+  const found = bundled.find((p) => {
     try {
       return fs.existsSync(p);
     } catch {
       return false;
     }
-  }) ?? 'ffmpeg';
+  });
 
+  // Zip extraction and some copy paths drop the executable bit, and a binary
+  // without it fails to spawn with EACCES — which surfaces as "ffmpeg not
+  // found" and sends you looking in entirely the wrong place. Restoring it is
+  // cheap and idempotent.
+  if (found && process.platform !== 'win32') {
+    try {
+      fs.accessSync(found, fs.constants.X_OK);
+    } catch {
+      try {
+        fs.chmodSync(found, 0o755);
+      } catch {
+        /* read-only install; the spawn will report the real error */
+      }
+    }
+  }
+
+  resolvedFfmpeg = found ?? 'ffmpeg';
   return resolvedFfmpeg;
 }
 

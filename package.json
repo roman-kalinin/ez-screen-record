@@ -15,7 +15,8 @@
     "start": "npm run build && electron .",
     "icon": "python tools/make-icon.py",
     "fetch:ffmpeg": "node tools/fetch-ffmpeg.mjs",
-    "dist": "npm run build && electron-builder --win"
+    "dist": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -70,6 +71,45 @@
       "icon": "build/icon.ico",
       "artifactName": "${productName} Setup ${version}.${ext}",
       "signAndEditExecutable": false
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.video",
+      "artifactName": "${productName} ${version} ${arch}.${ext}",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "identity": "-",
+      "extendInfo": {
+        "NSCameraUsageDescription": "Ez Screen Record needs your camera to show you on screen while you record.",
+        "NSMicrophoneUsageDescription": "Ez Screen Record needs your microphone to record narration.",
+        "NSAudioCaptureUsageDescription": "Ez Screen Record needs audio capture access to record system sound.",
+        "NSScreenCaptureUsageDescription": "Ez Screen Record needs screen recording access to capture your screen."
+      }
+    },
+    "dmg": {
+      "artifactName": "${productName} ${version} ${arch}.${ext}",
+      "contents": [
+        {
+          "x": 140,
+          "y": 180
+        },
+        {
+          "x": 400,
+          "y": 180,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,

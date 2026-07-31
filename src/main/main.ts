@@ -17,8 +17,10 @@ import type { CaptureSource, AppSettings } from '../shared/types';
 import { loadSettings, saveSettings, defaultOutputDir } from './settings';
 import { listAllWindows, restoreWindowForCapture } from './window-list';
 import { remuxToMp4 } from './remux';
+import { ensureScreenPermission, primePermissions } from './mac-permissions';
 import {
   NativeRecorder,
+  listCaptureDevices,
   listDshowAudioDevices,
   listDshowDevices,
   type NativeCameraOptions,
@@ -406,7 +408,12 @@ function createToolbarWindow(display: Electron.Display): BrowserWindow {
   // `if (layered_) ex_style |= WS_EX_LAYERED` re-adds the style on every
   // subsequent call. 0.99 rather than 1.0 because 1.0 is treated as "not
   // transparent" and skips the layered path.
-  toolbarWindow.setOpacity(0.99);
+  //
+  // Windows-only: this is a workaround for a Win32 style flag. On macOS there
+  // is no WS_EX_LAYERED, setContentProtection uses NSWindow sharingType and is
+  // unaffected by click-through — so 0.99 would just make the toolbar visibly
+  // translucent for no benefit.
+  if (process.platform === 'win32') toolbarWindow.setOpacity(0.99);
 
   toolbarWindow.loadURL(rendererUrl('toolbar'));
   toolbarWindow.setAlwaysOnTop(true, 'screen-saver');
@@ -711,6 +718,60 @@ function registerIpc() {
   ipcMain.handle('native:devices', () => listDshowDevices());
   ipcMain.handle('native:audioDevices', () => listDshowAudioDevices());
 
+  /**
+   * Which display the recorder should capture, in the backend's own terms.
+   *
+   * Windows: a ddagrab output index, where 0 is the primary display.
+   *
+   * macOS: an avfoundation *device* index. Screens share the numbering with
+   * cameras there, so index 0 is usually a webcam rather than a display —
+   * hardcoding 0 would silently record someone's face instead of their screen.
+   * The index is looked up from the device list instead.
+   */
+  async function resolveDisplayId(): Promise<number> {
+    if (process.platform !== 'darwin') return 0;
+    try {
+      const { screens } = await listCaptureDevices();
+      const id = Number(screens[0]?.id);
+      return Number.isFinite(id) ? id : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Translate a device *name* into whatever this platform's ffmpeg wants.
+   *
+   * The renderer matches the browser's device label against the ffmpeg device
+   * list and sends a name, which is exactly right on Windows — dshow addresses
+   * devices by name. avfoundation addresses them by index, so on macOS the name
+   * has to be resolved back to one here. Doing it in main keeps the renderer
+   * free of platform-specific device addressing.
+   */
+  async function resolveDeviceId(
+    name: string | null | undefined,
+    kind: 'audio' | 'video',
+  ): Promise<string | null> {
+    if (!name) return null;
+    if (process.platform !== 'darwin') return name;
+    try {
+      const devices = (await listCaptureDevices())[kind];
+      // The renderer may already have sent an index (it echoes back whatever
+      // the device list gave it), so accept that first.
+      const byId = devices.find((d) => d.id === name);
+      if (byId) return byId.id;
+
+      const needle = name.toLowerCase();
+      const byLabel =
+        devices.find((d) => d.label.toLowerCase() === needle) ??
+        devices.find((d) => d.label.toLowerCase().includes(needle)) ??
+        devices.find((d) => needle.includes(d.label.toLowerCase()));
+      return byLabel?.id ?? devices[0]?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   ipcMain.handle(
     'native:start',
     async (
@@ -728,6 +789,19 @@ function registerIpc() {
         if (nativeRecorder?.isRecording) {
           return { ok: false, error: 'A recording is already running.' };
         }
+
+        // macOS blocks screen capture until the app is granted permission, and
+        // ffmpeg's failure in that case says nothing about permissions. Check
+        // first so the user gets the dialog that actually explains it. No-op on
+        // Windows.
+        if (!(await ensureScreenPermission())) {
+          return {
+            ok: false,
+            error:
+              'Screen recording permission is required. Grant it in System Settings, then restart the app.',
+          };
+        }
+
         const dir = opts.outputDir || defaultOutputDir();
         const stamp = new Date()
           .toISOString()
@@ -742,8 +816,16 @@ function registerIpc() {
           fps: opts.fps,
           height: opts.height,
           quality: opts.quality,
-          micDeviceName: opts.micDeviceName ?? null,
-          camera: opts.camera ?? null,
+          micDeviceName: await resolveDeviceId(opts.micDeviceName, 'audio'),
+          camera: opts.camera
+            ? {
+                ...opts.camera,
+                deviceName:
+                  (await resolveDeviceId(opts.camera.deviceName, 'video')) ??
+                  opts.camera.deviceName,
+              }
+            : null,
+          displayId: await resolveDisplayId(),
         });
         return { ok: true, filePath: outputPath };
       } catch (err) {
@@ -891,6 +973,13 @@ if (!gotLock) {
     });
 
     registerIpc();
+
+    // macOS prompts for camera and microphone here, so the user meets those
+    // dialogs while setting up rather than at the moment they press record.
+    // Screen recording is deliberately not prompted at launch — it is asked for
+    // when a recording is actually started. No-op on Windows.
+    void primePermissions();
+
     createControlWindow();
     createOverlayWindow();
     // Built up front and kept hidden so pressing record shows it instantly,
