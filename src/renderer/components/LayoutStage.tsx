@@ -126,6 +126,15 @@ interface Props {
    * blocks its own recording. Set while a native take is running.
    */
   suspendCapture?: boolean;
+  /**
+   * A take is under way and ffmpeg is capturing the same display.
+   *
+   * The preview stays live and fully editable — but it drops to a much cheaper
+   * capture. Every CPU cycle and every WGC frame this window takes is one the
+   * recorder does not get, and that contention is what reduced 120fps takes to
+   * ~20-30 genuinely-unique frames per second.
+   */
+  recording?: boolean;
 }
 
 /** Smallest an overlay may be shrunk to, as a fraction of the frame. */
@@ -148,6 +157,7 @@ export function LayoutStage({
   onCameraShape,
   onCameraMirror,
   suspendCapture = false,
+  recording = false,
 }: Props) {
   const s = useStyles();
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -157,6 +167,13 @@ export function LayoutStage({
   const [screenErr, setScreenErr] = useState<string | null>(null);
   /** True once the camera stream is actually live and painting frames. */
   const [hasCameraFeed, setHasCameraFeed] = useState(false);
+  /**
+   * A gesture is in progress. Only used to hide the floating shape bar: the
+   * dragged element is painted directly to the DOM, so anything positioned
+   * from React state would trail a frame behind it until the pointer is
+   * released. One state flip per gesture, not per pointer-move.
+   */
+  const [dragging, setDragging] = useState(false);
 
   // --- Live screen preview ---------------------------------------------------
   useEffect(() => {
@@ -179,9 +196,14 @@ export function LayoutStage({
             mandatory: {
               chromeMediaSource: 'desktop',
               chromeMediaSourceId: screenSourceId,
-              // A low preview framerate keeps the UI cheap while idle.
-              maxFrameRate: 15,
-              maxWidth: 1280,
+              // A low preview framerate keeps the UI cheap while idle — and
+              // cheaper still during a take. Every frame this capture pulls is
+              // one ffmpeg does not get: the preview and the recorder are
+              // contending for the same Desktop Duplication source and the same
+              // CPU. At 5fps/640px the preview stays live and editable while
+              // costing the recorder almost nothing.
+              maxFrameRate: recording ? 5 : 15,
+              maxWidth: recording ? 640 : 1280,
             },
           },
         } as unknown as MediaStreamConstraints);
@@ -203,7 +225,7 @@ export function LayoutStage({
       cancelled = true;
       stream?.getTracks().forEach((t) => t.stop());
     };
-  }, [screenSourceId, suspendCapture]);
+  }, [screenSourceId, suspendCapture, recording]);
 
   // --- Live camera preview ---------------------------------------------------
   useEffect(() => {
@@ -259,6 +281,25 @@ export function LayoutStage({
     else onImageRect(id, r);
   };
 
+  /**
+   * Geometry for the element currently being dragged.
+   *
+   * A drag fires a pointer-move per frame, and routing each one through React
+   * state re-rendered the whole stage — every overlay, the shape bar and the
+   * <video> wrappers — at pointer rate. That is pure CPU the recorder needs, so
+   * during a gesture the position is written straight to the node's style and
+   * React is left untouched until the pointer is released.
+   */
+  const dragNodeRef = useRef<HTMLElement | null>(null);
+  const latestRectRef = useRef<Rect | null>(null);
+
+  const paint = (node: HTMLElement, r: Rect) => {
+    node.style.left = `${r.x * 100}%`;
+    node.style.top = `${r.y * 100}%`;
+    node.style.width = `${r.w * 100}%`;
+    node.style.height = `${r.h * 100}%`;
+  };
+
   const onPointerDown = (e: React.PointerEvent, id: string, kind: 'move' | 'resize') => {
     e.stopPropagation();
     e.preventDefault();
@@ -266,40 +307,55 @@ export function LayoutStage({
     if (!orig) return;
     onSelect(id);
     dragRef.current = { kind, id, startX: e.clientX, startY: e.clientY, orig };
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    latestRectRef.current = orig;
+    // The resize handle is a child of the overlay box; the box itself is what
+    // must move, so walk up to the positioned ancestor.
+    const target = e.currentTarget as HTMLElement;
+    dragNodeRef.current = kind === 'resize' ? target.parentElement : target;
+    target.setPointerCapture(e.pointerId);
+    setDragging(true);
   };
 
-  const onPointerMove = useCallback(
-    (e: React.PointerEvent) => {
-      const drag = dragRef.current;
-      const wrap = wrapRef.current;
-      if (!drag || !wrap) return;
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
+    const drag = dragRef.current;
+    const wrap = wrapRef.current;
+    if (!drag || !wrap) return;
 
-      const bounds = wrap.getBoundingClientRect();
-      const dx = (e.clientX - drag.startX) / bounds.width;
-      const dy = (e.clientY - drag.startY) / bounds.height;
+    const bounds = wrap.getBoundingClientRect();
+    const dx = (e.clientX - drag.startX) / bounds.width;
+    const dy = (e.clientY - drag.startY) / bounds.height;
 
-      if (drag.kind === 'move') {
-        // Clamp so an overlay can never be dragged fully off-frame.
-        const x = Math.min(Math.max(drag.orig.x + dx, 0), 1 - drag.orig.w);
-        const y = Math.min(Math.max(drag.orig.y + dy, 0), 1 - drag.orig.h);
-        commit(drag.id, { ...drag.orig, x, y });
-      } else {
-        // Clamp to the available space FIRST, then apply the minimum — doing it
-        // the other way round lets the min defeat the max near an edge and the
-        // overlay collapses below its intended minimum size.
-        const maxW = Math.max(1 - drag.orig.x, MIN_SIZE);
-        const maxH = Math.max(1 - drag.orig.y, MIN_SIZE);
-        const w = Math.max(MIN_SIZE, Math.min(drag.orig.w + dx, maxW));
-        const h = Math.max(MIN_SIZE, Math.min(drag.orig.h + dy, maxH));
-        commit(drag.id, { ...drag.orig, w, h });
-      }
-    },
-    [camera, images],
-  );
+    let next: Rect;
+    if (drag.kind === 'move') {
+      // Clamp so an overlay can never be dragged fully off-frame.
+      const x = Math.min(Math.max(drag.orig.x + dx, 0), 1 - drag.orig.w);
+      const y = Math.min(Math.max(drag.orig.y + dy, 0), 1 - drag.orig.h);
+      next = { ...drag.orig, x, y };
+    } else {
+      // Clamp to the available space FIRST, then apply the minimum — doing it
+      // the other way round lets the min defeat the max near an edge and the
+      // overlay collapses below its intended minimum size.
+      const maxW = Math.max(1 - drag.orig.x, MIN_SIZE);
+      const maxH = Math.max(1 - drag.orig.y, MIN_SIZE);
+      const w = Math.max(MIN_SIZE, Math.min(drag.orig.w + dx, maxW));
+      const h = Math.max(MIN_SIZE, Math.min(drag.orig.h + dy, maxH));
+      next = { ...drag.orig, w, h };
+    }
+
+    latestRectRef.current = next;
+    if (dragNodeRef.current) paint(dragNodeRef.current, next);
+  }, []);
 
   const onPointerUp = () => {
+    const drag = dragRef.current;
+    const finalRect = latestRectRef.current;
     dragRef.current = null;
+    dragNodeRef.current = null;
+    latestRectRef.current = null;
+    if (drag) setDragging(false);
+    // Publish once, at the end of the gesture. React then re-renders with the
+    // same geometry already painted, so there is no visible snap.
+    if (drag && finalRect) commit(drag.id, finalRect);
   };
 
   const borderRadius =
@@ -320,7 +376,10 @@ export function LayoutStage({
 
       {suspendCapture && (
         <div className={s.empty}>
-          <Text size={200}>Recording — preview paused so the recorder has the camera</Text>
+          <Text size={200}>
+            Recording — the camera is held by the recorder. Turn on “Show camera on screen
+            while recording” to keep it live here.
+          </Text>
         </div>
       )}
 
@@ -401,7 +460,7 @@ export function LayoutStage({
       {/* Shape controls appear on the camera itself when it's selected —
           no need to hunt through the panel to change it. Positioned above
           the camera, or below when it's near the top of the frame. */}
-      {camera.enabled && camera.deviceId && hasCameraFeed && selectedId === 'camera' && (
+      {camera.enabled && camera.deviceId && hasCameraFeed && selectedId === 'camera' && !dragging && (
         <div
           className={s.shapeBar}
           style={{

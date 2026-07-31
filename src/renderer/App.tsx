@@ -337,11 +337,15 @@ export function App() {
   const micsRef = useRef<MediaDevice[]>([]);
   const nativeCamsRef = useRef<string[]>([]);
   const nativeMicsRef = useRef<string[]>([]);
+  const sourcesRef = useRef<CaptureSource[]>([]);
   nativeAvailableRef.current = nativeAvailable;
   camsRef.current = cams;
   micsRef.current = mics;
   nativeCamsRef.current = nativeCams;
   nativeMicsRef.current = nativeMics;
+  sourcesRef.current = sources;
+  /** True while the on-screen camera bubble (Mode A) is up. */
+  const onScreenCameraRef = useRef(false);
 
   const notify = useCallback(
     (title: string, body?: string, intent: 'success' | 'error' | 'warning' = 'success') => {
@@ -510,11 +514,42 @@ export function App() {
 
       const cam = settingsRef.current.camera;
 
-      // Release the preview's hold on the webcam BEFORE ffmpeg opens it.
-      // DirectShow is exclusive, so without this the app blocks its own
-      // recording. The delay gives the OS time to actually free the device —
-      // stopping a track is not synchronous down at the driver level.
-      if (camName) {
+      // Mode A — the camera stays with the renderer and is shown in a real
+      // window on the recorded display, which ffmpeg captures as ordinary
+      // screen pixels. ffmpeg never opens the webcam, so the preview keeps the
+      // device and stays live and editable for the whole take.
+      // Mode A is the default whenever there is a camera, and `showOnScreen`
+      // only exists to opt OUT of it.
+      //
+      // The reason is structural, not cosmetic. ffmpeg's libplacebo blend is a
+      // framesync filter: it emits one output frame per synchronised set of
+      // inputs, so the slowest input paces the entire graph. A webcam is
+      // typically 30fps and drops to ~15 in dim light, which dragged 60fps
+      // takes down to ~21 genuinely-unique frames per second and 120fps takes
+      // to ~13. Measured every escape route — moving `fps=` before or after the
+      // overlay, forcing an explicit camera mode, framesync options — and the
+      // gate survives all of them, because it is what the filter is designed to
+      // do. There is no ffmpeg-composites-the-camera path that holds frame rate.
+      //
+      // Mode A takes the camera out of ffmpeg's graph entirely: it renders in
+      // an always-on-top window and Windows composites it, so ffmpeg captures a
+      // plain screen and the webcam's rate never touches the recording clock.
+      // Measured at 60fps with the camera visible: 21 -> 58 unique fps. It is
+      // also the only mode that leaves the preview live, so both hard rules are
+      // satisfied by the same decision.
+      const onScreenCamera = Boolean(camName) && cam.showOnScreen !== false;
+      onScreenCameraRef.current = onScreenCamera;
+
+      if (onScreenCamera) {
+        // Put the bubble on the display that is actually being recorded.
+        const src = sourcesRef.current.find((x) => x.id === cfg.screenSourceId);
+        await window.ez.cameraOverlay.show(src?.displayId);
+        await window.ez.cameraOverlay.send('cameraOverlay:config', cam);
+      } else if (camName) {
+        // Mode B — ffmpeg opens the webcam itself. Release the preview's hold
+        // on it FIRST: DirectShow is exclusive, so without this the app blocks
+        // its own recording. The delay gives the OS time to actually free the
+        // device — stopping a track is not synchronous down at the driver level.
         setCaptureSuspended(true);
         await new Promise((r) => setTimeout(r, 700));
       }
@@ -524,22 +559,26 @@ export function App() {
         height: cfg.resolution === 'source' ? undefined : Number(cfg.resolution),
         quality: cfg.quality,
         micDeviceName: micName,
-        camera: camName
-          ? {
-              deviceName: camName,
-              rect: cam.rect,
-              // libplacebo takes 0..0.5, where 0.5 is a full circle.
-              cornerRounding:
-                cam.shape === 'circle' ? 0.5 : cam.shape === 'rounded' ? 0.15 : 0,
-              mirrored: cam.mirrored,
-            }
-          : null,
+        // In Mode A the bubble is already on screen, so ffmpeg must NOT
+        // composite a second copy of the camera.
+        camera:
+          camName && !onScreenCamera
+            ? {
+                deviceName: camName,
+                rect: cam.rect,
+                // libplacebo takes 0..0.5, where 0.5 is a full circle.
+                cornerRounding:
+                  cam.shape === 'circle' ? 0.5 : cam.shape === 'rounded' ? 0.15 : 0,
+                mirrored: cam.mirrored,
+              }
+            : null,
         outputDir: cfg.outputDir,
       });
 
       if (!res.ok) {
         // Give the preview its devices back so the app is usable again.
         setCaptureSuspended(false);
+        void window.ez.cameraOverlay.hide();
         notify('Could not start recording', res.error, 'error');
         setState('idle');
         return;
@@ -630,8 +669,13 @@ export function App() {
       } else {
         notify('Could not save recording', res.error, 'error');
       }
-      // ffmpeg has exited; the preview can reclaim the devices.
+      // ffmpeg has exited; the preview can reclaim the devices and the
+      // on-screen bubble comes down.
       setCaptureSuspended(false);
+      if (onScreenCameraRef.current) {
+        onScreenCameraRef.current = false;
+        void window.ez.cameraOverlay.hide();
+      }
       setState('idle');
       setElapsed(0);
       return;
@@ -680,6 +724,24 @@ export function App() {
 
   // The overlay can exit draw mode itself (Esc or its ✕ button).
   useEffect(() => window.ez.on('control:drawModeChanged', (v: boolean) => setDrawing(v)), []);
+
+  // The on-screen bubble is draggable in place; mirror its geometry back so the
+  // app preview and the desktop bubble never disagree.
+  useEffect(
+    () =>
+      window.ez.on('control:cameraRect', (rect: Rect) =>
+        setSettings((p) => ({ ...p, camera: { ...p.camera, rect } })),
+      ),
+    [],
+  );
+
+  // Push camera changes (shape, mirror, shadow, device, rect) into the bubble
+  // while a Mode A take is running, so edits are live on the real desktop too.
+  useEffect(() => {
+    if (!onScreenCameraRef.current) return;
+    if (state !== 'recording' && state !== 'paused') return;
+    void window.ez.cameraOverlay.send('cameraOverlay:config', settings.camera);
+  }, [settings.camera, state]);
 
   // Main reports any shortcut another app already owns.
   useEffect(() => window.ez.on('hotkeyConflict', (list: string[]) => setHotkeyConflicts(list)), []);
@@ -870,6 +932,7 @@ export function App() {
             setSettings((p) => ({ ...p, camera: { ...p.camera, mirrored } }))
           }
           suspendCapture={captureSuspended}
+          recording={state === 'recording' || state === 'paused'}
         />
 
         {settings.images.length > 0 && (
@@ -1096,6 +1159,19 @@ export function App() {
                   setSettings((p) => ({ ...p, camera: { ...p.camera, shadow: d.checked } }))
                 }
               />
+
+              <Switch
+                checked={settings.camera.showOnScreen}
+                label="Show camera on screen while recording"
+                onChange={(_e, d) =>
+                  setSettings((p) => ({ ...p, camera: { ...p.camera, showOnScreen: d.checked } }))
+                }
+              />
+              <Text size={100} style={{ color: tokens.colorNeutralForeground3, marginTop: '-4px' }}>
+                {settings.camera.showOnScreen
+                  ? 'Recommended. The camera bubble sits on your desktop and can be dragged in place, the preview stays live and editable, and the recording keeps its full frame rate.'
+                  : 'The camera bubble stays hidden from your desktop, but the recorder composites it — the preview pauses and the frame rate drops to your webcam’s (often 30fps, or lower in dim light).'}
+              </Text>
 
               <Divider />
 

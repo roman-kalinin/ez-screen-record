@@ -53,6 +53,13 @@ for (const stream of [process.stdout, process.stderr]) {
 
 let controlWindow: BrowserWindow | null = null;
 let overlayWindow: BrowserWindow | null = null;
+/**
+ * On-screen camera bubble, shown while recording when the user opts to keep the
+ * camera visible on the desktop (so the app preview stays live and ffmpeg
+ * captures the bubble as real screen pixels). Deliberately NOT content-
+ * protected — being captured is the whole point.
+ */
+let cameraOverlayWindow: BrowserWindow | null = null;
 /** Active ffmpeg-backed recording, when the crisp engine is in use. */
 let nativeRecorder: NativeRecorder | null = null;
 
@@ -132,8 +139,9 @@ function createControlWindow() {
 
   controlWindow.on('closed', () => {
     controlWindow = null;
-    // The overlay is a child concept; without the controller it is orphaned.
+    // The overlays are child concepts; without the controller they are orphaned.
     overlayWindow?.close();
+    cameraOverlayWindow?.close();
   });
 
   // Open external links in the real browser instead of a new Electron window.
@@ -237,6 +245,64 @@ function refitOverlay() {
   });
 }
 
+/**
+ * The on-screen camera window. Modelled on the drawing overlay — transparent,
+ * always-on-top, click-through — but crucially it is NOT content-protected, so
+ * ffmpeg's screen capture records the camera bubble. It covers a single display
+ * (the one being recorded) rather than the whole virtual desktop, so the bubble
+ * lands in the recording's coordinate space.
+ */
+function createCameraOverlayWindow(display: Electron.Display): BrowserWindow {
+  if (cameraOverlayWindow && !cameraOverlayWindow.isDestroyed()) {
+    cameraOverlayWindow.setBounds(display.bounds);
+    return cameraOverlayWindow;
+  }
+
+  cameraOverlayWindow = new BrowserWindow({
+    ...display.bounds,
+    transparent: true,
+    frame: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    fullscreenable: false,
+    type: 'toolbar',
+    show: false,
+    webPreferences: {
+      preload: preloadPath(),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  });
+
+  cameraOverlayWindow.loadURL(rendererUrl('camera'));
+  cameraOverlayWindow.setAlwaysOnTop(true, 'screen-saver');
+  cameraOverlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // Start click-through; the renderer enables interaction only over the bubble.
+  cameraOverlayWindow.setIgnoreMouseEvents(true, { forward: true });
+
+  // Same safety net as the drawing overlay: never leave a desktop-covering
+  // window swallowing input if the renderer loses track of the flag.
+  const forceClickThrough = () => {
+    if (cameraOverlayWindow && !cameraOverlayWindow.isDestroyed()) {
+      cameraOverlayWindow.setIgnoreMouseEvents(true, { forward: true });
+    }
+  };
+  cameraOverlayWindow.webContents.on('render-process-gone', forceClickThrough);
+  cameraOverlayWindow.webContents.on('unresponsive', forceClickThrough);
+  cameraOverlayWindow.on('hide', forceClickThrough);
+
+  cameraOverlayWindow.on('closed', () => {
+    cameraOverlayWindow = null;
+  });
+
+  return cameraOverlayWindow;
+}
+
 // ---------------------------------------------------------------------------
 // IPC
 // ---------------------------------------------------------------------------
@@ -307,6 +373,44 @@ function registerIpc() {
   /** Relay from overlay back to the controller (e.g. draw-mode exited). */
   ipcMain.handle('control:send', (_e, channel: string, payload: unknown) => {
     controlWindow?.webContents.send(channel, payload);
+    return true;
+  });
+
+  // --- On-screen camera overlay --------------------------------------------
+  /**
+   * Show the camera bubble on the recorded display. `displayId` matches the
+   * capture source; we fall back to the primary display if it can't be
+   * resolved (e.g. a window source rather than a whole screen).
+   */
+  ipcMain.handle('cameraOverlay:show', (_e, displayId?: string) => {
+    const displays = screen.getAllDisplays();
+    const target =
+      (displayId && displays.find((d) => String(d.id) === String(displayId))) ||
+      screen.getPrimaryDisplay();
+    const win = createCameraOverlayWindow(target);
+    win.showInactive(); // never steal focus from what's being demonstrated
+    return true;
+  });
+
+  ipcMain.handle('cameraOverlay:hide', () => {
+    // Restore click-through before hiding, never after.
+    cameraOverlayWindow?.setIgnoreMouseEvents(true, { forward: true });
+    cameraOverlayWindow?.hide();
+    return true;
+  });
+
+  /** Toggle whether the camera overlay swallows mouse input. The renderer turns
+   *  this on only while the pointer is over the bubble (so the rest of the
+   *  desktop stays usable), and off again on leave. */
+  ipcMain.handle('cameraOverlay:setInteractive', (_e, interactive: boolean) => {
+    if (!cameraOverlayWindow || cameraOverlayWindow.isDestroyed()) return false;
+    cameraOverlayWindow.setIgnoreMouseEvents(!interactive, { forward: true });
+    return true;
+  });
+
+  /** Relay control -> camera overlay (camera config + rect updates). */
+  ipcMain.handle('cameraOverlay:send', (_e, channel: string, payload: unknown) => {
+    cameraOverlayWindow?.webContents.send(channel, payload);
     return true;
   });
 

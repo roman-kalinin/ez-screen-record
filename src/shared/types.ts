@@ -33,6 +33,31 @@ export interface CameraOverlay {
   mirrored: boolean;
   /** Drop shadow behind the overlay. */
   shadow: boolean;
+  /**
+   * Show the camera as a real, draggable window on the desktop while recording,
+   * instead of letting ffmpeg composite it internally. ON by default.
+   *
+   * When on: the webcam is opened once by the renderer (so the app's preview
+   * stays live and fully editable during a take) and mirrored into an
+   * always-on-top overlay window that ffmpeg's screen capture picks up — the
+   * same trick the drawing tool uses. The bubble is then visible on the real
+   * desktop and can be dragged/resized in place, live.
+   *
+   * When off, ffmpeg composites the camera itself. That costs BOTH hard rules
+   * and is why this defaults to on: the preview is suspended for the take, and
+   * ffmpeg's blend is framesync'd, so the webcam's rate paces the whole
+   * recording — a 30fps camera (15fps in dim light) pulled 60fps takes down to
+   * ~21 unique fps and 120fps takes to ~13. Only turn it off if the camera
+   * bubble must not be visible on the real desktop, and expect the frame rate
+   * to follow the webcam.
+   */
+  showOnScreen: boolean;
+  /**
+   * Set once `showOnScreen` has been migrated to its new default. Without this
+   * the migration would re-apply on every load and the user could never turn
+   * the setting back off. Internal; not shown in the UI.
+   */
+  showOnScreenMigrated?: boolean;
 }
 
 export interface ImageOverlay {
@@ -166,6 +191,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     shape: 'rounded',
     mirrored: true,
     shadow: true,
+    showOnScreen: true,
   },
   images: [],
   draw: {

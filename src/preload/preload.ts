@@ -23,6 +23,15 @@ const api = {
       ipcRenderer.invoke('control:send', channel, payload),
   },
 
+  /** The on-screen camera bubble shown while recording (Mode A). */
+  cameraOverlay: {
+    show: (displayId?: string) => ipcRenderer.invoke('cameraOverlay:show', displayId),
+    hide: () => ipcRenderer.invoke('cameraOverlay:hide'),
+    setInteractive: (v: boolean) => ipcRenderer.invoke('cameraOverlay:setInteractive', v),
+    send: (channel: string, payload?: unknown) =>
+      ipcRenderer.invoke('cameraOverlay:send', channel, payload),
+  },
+
   window: {
     minimize: () => ipcRenderer.invoke('win:minimize'),
     close: (isRecording = false) => ipcRenderer.invoke('win:close', isRecording),
