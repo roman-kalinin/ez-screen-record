@@ -11,6 +11,7 @@
 #include <windows.graphics.capture.interop.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
 
+#include <cstdlib>
 #include <vector>
 
 namespace winrt {
@@ -200,16 +201,22 @@ bool ScreenCapture::Start(ID3D11Device* device, int monitorIndex, uint32_t targe
     }
 
     if (HasMinUpdateInterval() && targetFps > 0) {
-      // Two traps here, both measured by others and both silent:
-      //  - anything under 1000us disables the override entirely (999us drops
-      //    back to ~50fps), so the interval is clamped at 1ms;
-      //  - asking for exactly 1/target undershoots badly (1/60 yields ~45fps),
-      //    so the request is deliberately 1.5x faster than the target and the
-      //    real cadence is enforced by the compositor's own timer.
+      // MinUpdateInterval is a hint whose response curve is neither linear nor
+      // monotonic, so this is set from measurement rather than derived from the
+      // target rate. Measured on a 165Hz panel, distinct frames per second at a
+      // 165fps request: 1000us -> 129, 2000us -> 150, 4000us -> 129,
+      // 8333us -> 71. Deriving it as 1/(target*k) landed in the slow region and
+      // was what capped capture around 75fps.
+      //
+      // 2ms sits at the top of that curve and holds a full 120.0 distinct fps
+      // at a 120 request. Values under 1000us are ignored by the OS entirely
+      // (999us silently reverts to the ~50fps default), so the floor matters.
       using namespace std::chrono;
-      auto interval = duration_cast<winrt::TimeSpan>(
-          duration<double>(1.0 / (static_cast<double>(targetFps) * 1.5)));
-      if (interval < microseconds(1000)) interval = microseconds(1000);
+      auto interval = duration_cast<winrt::TimeSpan>(microseconds(2000));
+      if (const char* env = std::getenv("EZ_WGC_INTERVAL_US")) {
+        const long long us = std::atoll(env);
+        if (us >= 1000) interval = duration_cast<winrt::TimeSpan>(microseconds(us));
+      }
       try {
         impl_->session.MinUpdateInterval(interval);
       } catch (...) {
