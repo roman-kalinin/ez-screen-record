@@ -149,8 +149,15 @@ export class NativeRecorder {
     // Base layer. hwdownload/hwupload bridges D3D11 to Vulkan — there is no
     // zero-copy path between them, but this is a straight memcpy rather than
     // CPU blending, which is why it keeps up where `overlay` did not.
+    //
+    // ddagrab's D3D11 surface downloads as BGRA (that exact format is required
+    // here — `hwdownload,format=rgba` errors out). But libplacebo then treats
+    // the channels as RGBA, which swaps red and blue: the desktop came out
+    // sickly yellow-green and red UI turned blue. Converting BGRA→RGBA before
+    // the hwupload puts the channels in the order libplacebo expects, so
+    // colours are faithful.
     const scaleStep = outH ? `,scale=-2:${outH}:flags=lanczos` : '';
-    chains.push(`[0:v]hwdownload,format=bgra${scaleStep},hwupload[bg]`);
+    chains.push(`[0:v]hwdownload,format=bgra${scaleStep},format=rgba,hwupload[bg]`);
     layers.push('[bg]');
 
     // Each overlay needs its OWN libplacebo instance to position it. Putting
