@@ -4,6 +4,8 @@
 #include <wrl/client.h>
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -46,13 +48,36 @@ struct Frame {
 class LatestSlot {
  public:
   void Publish(std::shared_ptr<Frame> frame) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    latest_ = std::move(frame);
-    ++generation_;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      latest_ = std::move(frame);
+      ++generation_;
+    }
+    changed_.notify_all();
   }
 
   std::shared_ptr<Frame> Acquire() {
     std::lock_guard<std::mutex> lock(mutex_);
+    return latest_;
+  }
+
+  /**
+   * Wait for a frame newer than `since`, or until the deadline passes.
+   *
+   * Sampling purely on a timer loses frames: when two arrive between ticks the
+   * first is overwritten before it is ever encoded, which cost ~35% of the
+   * frames WGC actually delivered (103.5 captured vs 66.6 unique in the file).
+   * Waking on arrival instead keeps them, while the deadline still bounds the
+   * wait so a static screen — where WGC delivers nothing at all — continues to
+   * emit frames on cadence.
+   *
+   * Returns the frame, and updates `since` to the generation it came from.
+   */
+  std::shared_ptr<Frame> WaitForNewer(uint64_t* since,
+                                      std::chrono::steady_clock::time_point deadline) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    changed_.wait_until(lock, deadline, [&] { return generation_ != *since; });
+    *since = generation_;
     return latest_;
   }
 
@@ -63,6 +88,7 @@ class LatestSlot {
 
  private:
   mutable std::mutex mutex_;
+  std::condition_variable changed_;
   std::shared_ptr<Frame> latest_;
   uint64_t generation_ = 0;
 };

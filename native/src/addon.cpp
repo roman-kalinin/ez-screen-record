@@ -3,6 +3,7 @@
 #include <d3d11.h>
 #include <wrl/client.h>
 
+#include <chrono>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -175,31 +176,23 @@ Napi::Value CaptureTest(const Napi::CallbackInfo& info) {
   uint32_t encoded = 0, fresh = 0;
   uint64_t lastGeneration = 0;
 
-  LARGE_INTEGER freq, start;
-  QueryPerformanceFrequency(&freq);
-  QueryPerformanceCounter(&start);
+  // Absolute deadlines from a fixed epoch: adding deltas to "now" would let
+  // rounding error accumulate over a long take.
+  const auto epoch = std::chrono::steady_clock::now();
 
   for (uint32_t i = 0; i < totalFrames; ++i) {
     // Absolute deadlines from a fixed epoch: adding deltas to "now" would let
     // rounding error accumulate over a long take.
-    const double deadline = static_cast<double>(i) / fps;
-    for (;;) {
-      LARGE_INTEGER now;
-      QueryPerformanceCounter(&now);
-      const double elapsed =
-          static_cast<double>(now.QuadPart - start.QuadPart) / freq.QuadPart;
-      if (elapsed >= deadline) break;
-      const double remaining = deadline - elapsed;
-      if (remaining > 0.002) Sleep(1);
-    }
+    const auto waitUntil =
+        epoch + std::chrono::nanoseconds(static_cast<int64_t>(1e9 * (i + 1) / fps));
 
-    auto frame = capture.Slot().Acquire();
-    const uint64_t generation = capture.Slot().Generation();
+    // Wait for a genuinely new frame rather than sampling whatever happens to
+    // be in the slot at tick time; the deadline bounds the wait so a static
+    // screen (where WGC delivers nothing) still emits on cadence.
+    const uint64_t before = lastGeneration;
+    auto frame = capture.Slot().WaitForNewer(&lastGeneration, waitUntil);
     if (frame) {
-      if (generation != lastGeneration) {
-        ++fresh;
-        lastGeneration = generation;
-      }
+      if (lastGeneration != before) ++fresh;
       context->CopyResource(encodeTex.Get(), frame->texture.Get());
     }
     if (!enc.Encode(encodeTex.Get(), 0, i, &err)) break;
