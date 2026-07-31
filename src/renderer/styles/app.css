@@ -1,0 +1,104 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  /* Segoe UI Variable resolves per optical size — the bare family name
+     "Segoe UI Variable" does not exist as a font. Text is the UI/body face. */
+  font-family: 'Segoe UI Variable Text', 'Segoe UI Variable Static Text', 'Segoe UI', system-ui,
+    sans-serif;
+  /* Solid WinUI surface. Mica is intentionally disabled — see main.ts. */
+  background: #202020;
+}
+
+@media (prefers-color-scheme: light) {
+  html,
+  body,
+  #root {
+    background: #f3f3f3;
+  }
+}
+
+/* Frameless window drag region. Interactive children must opt out. */
+.titlebar {
+  -webkit-app-region: drag;
+}
+.titlebar button,
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Thin scrollbars that match the dark chrome. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+/* Flyout surfaces must be opaque.
+   The theme's card colours are deliberately translucent so the Mica backdrop
+   shows through the window body — but menus, dropdown listboxes and tooltips
+   float above arbitrary content, and inheriting that translucency makes them
+   unreadable (they looked invisible). Fluent renders all of these into a
+   portal on document.body, so they're styled here rather than via makeStyles. */
+.fui-MenuPopover,
+.fui-PopoverSurface,
+.fui-Listbox,
+.fui-Dropdown__listbox,
+.fui-Tooltip {
+  background-color: #2c2c2c !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55) !important;
+  backdrop-filter: none !important;
+}
+
+/* Light theme equivalents. */
+@media (prefers-color-scheme: light) {
+  .fui-MenuPopover,
+  .fui-PopoverSurface,
+  .fui-Listbox,
+  .fui-Dropdown__listbox,
+  .fui-Tooltip {
+    background-color: #fbfbfb !important;
+    border-color: rgba(0, 0, 0, 0.08) !important;
+  }
+}
+
+/* Pulsing dot shown while a take is running. */
+@keyframes rec-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e81123;
+  animation: rec-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rec-dot {
+    animation: none;
+  }
+}

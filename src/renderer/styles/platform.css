@@ -1,0 +1,259 @@
+/*
+ * Platform-conditional native metrics.
+ *
+ * Everything here is scoped to `html[data-platform="..."]`, set once at boot
+ * from `process.platform` (see main.tsx). Two genuinely different design
+ * systems live side by side rather than one averaged-out compromise — an
+ * average of Fluent and AppKit looks native on neither.
+ *
+ * Sources:
+ *  - Windows type ramp: Microsoft "Typography in Windows" signature docs
+ *    (Caption 12/16, Body 14/20, Body Large 18/24, Subtitle 20/28, Title 28/36)
+ *  - macOS: Apple HIG type scale (Body 13/16, Caption 10/13, Title 1 22/26).
+ *
+ * Font-stack note: `-apple-system` is a *WebKit* keyword and does NOT resolve
+ * in Chromium — inside Electron it is inert. `BlinkMacSystemFont` is the token
+ * that actually resolves to SF Pro here; it is kept first for that reason.
+ * Never name "SF Pro"/"SF Pro Text" directly: those families are not reliably
+ * enumerable, and Apple's HIG explicitly says not to embed system fonts.
+ *
+ * Modern SF ships as a variable font with *dynamic* optical sizing, so the old
+ * "switch to Display above 20pt" rule no longer applies — do not hand-manage
+ * Text vs Display.
+ */
+
+/* ---------------------------------------------------------------------------
+ * Windows 11 / WinUI
+ * ------------------------------------------------------------------------ */
+html[data-platform='win32'] {
+  /* Segoe UI Variable carries the optical-size axis; the Static faces are the
+     fallback on builds where the variable font is missing. */
+  --font-ui: 'Segoe UI Variable Text', 'Segoe UI Variable Static Text',
+    'Segoe UI', system-ui, sans-serif;
+  --font-display: 'Segoe UI Variable Display', 'Segoe UI Variable Static Display',
+    'Segoe UI', system-ui, sans-serif;
+
+  /* Type ramp — size/line-height pairs straight from the WinUI ramp. */
+  --font-size-caption: 12px;
+  --line-height-caption: 16px;
+  --font-size-body: 14px;
+  --line-height-body: 20px;
+  --font-size-body-large: 18px;
+  --line-height-body-large: 24px;
+  --font-size-subtitle: 20px;
+  --line-height-subtitle: 28px;
+  --font-size-title: 28px;
+  --line-height-title: 36px;
+
+  /* WinUI geometry: 4px on controls and cards, 8px on flyouts/dialogs. */
+  --radius-control: 4px;
+  --radius-card: 8px;
+  --radius-flyout: 8px;
+
+  /* Standard WinUI control height is 32px. */
+  --control-height: 32px;
+  --control-height-small: 24px;
+  --control-padding-x: 12px;
+  --list-row-height: 40px;
+
+  /* Segoe has no per-size tracking curve — leave this at zero on Windows. */
+  --letter-spacing-ui: 0;
+  --tracking-body: 0;
+  /* Windows draws its own focus rings as a 2px high-contrast outline. */
+  --focus-ring: 2px solid currentColor;
+}
+
+/* ---------------------------------------------------------------------------
+ * macOS / AppKit
+ * ------------------------------------------------------------------------ */
+html[data-platform='darwin'] {
+  /* BlinkMacSystemFont is the token that actually fires in Electron; the
+     -apple-system prefix is harmless and helps if this CSS is ever reused in
+     a WebKit context. One stack only — the variable font handles optical
+     sizing across the whole ramp. */
+  --font-ui: BlinkMacSystemFont, -apple-system, system-ui, 'Helvetica Neue',
+    sans-serif;
+  --font-display: var(--font-ui);
+
+  /* Apple HIG macOS type scale. Points map 1:1 to CSS px.
+     Body is 13px, not 14px — this single value is the biggest giveaway that a
+     Mac app was designed on Windows. Note Headline is Bold on macOS (not
+     Semibold as on iOS). */
+  --font-size-caption: 10px;
+  --line-height-caption: 13px;
+  --font-size-footnote: 10px;
+  --line-height-footnote: 13px;
+  --font-size-subheadline: 11px;
+  --line-height-subheadline: 14px;
+  --font-size-callout: 12px;
+  --line-height-callout: 15px;
+  --font-size-body: 13px;
+  --line-height-body: 16px;
+  --font-size-body-large: 15px;
+  --line-height-body-large: 20px;
+  --font-size-subtitle: 17px;
+  --line-height-subtitle: 22px;
+  --font-size-title: 22px;
+  --line-height-title: 26px;
+  --font-size-large-title: 26px;
+  --line-height-large-title: 32px;
+
+  /* macOS minimum legible size is 10pt (vs 11pt on iOS). */
+
+  /* AppKit corner radii are softer and more varied than WinUI's. */
+  --radius-control: 6px;
+  --radius-card: 10px;
+  --radius-flyout: 10px;
+
+  /* Regular-size AppKit push button is 22pt; 28px is the comfortable
+     touch-adjacent size used in modern Mac utility apps. */
+  --control-height: 28px;
+  --control-height-small: 20px;
+  --control-padding-x: 10px;
+  --list-row-height: 28px;
+
+  /*
+   * Tracking. On a real Mac the system font adjusts tracking per point size;
+   * Chromium does NOT apply Apple's curve to web content, so text reads subtly
+   * "off" even with the right font unless we do it by hand.
+   *
+   * Apple's macOS tracking table (1/1000 em):
+   *   10pt +12 | 11pt +6 | 12pt 0 | 13pt -6 | 14pt -11 | 15pt -16
+   *   16pt -20 | 17pt -26 | 20pt -23 | 22pt -12 | 26pt +8
+   * Applied per-size below; the default here is the 13px body value.
+   */
+  --letter-spacing-ui: -0.006em;
+  --tracking-caption: 0.012em;   /* 10pt: +12 */
+  --tracking-subheadline: 0.006em; /* 11pt: +6 */
+  --tracking-callout: 0;          /* 12pt:  0 */
+  --tracking-body: -0.006em;      /* 13pt: -6 */
+  --tracking-body-large: -0.016em; /* 15pt: -16 */
+  --tracking-subtitle: -0.026em;  /* 17pt: -26 */
+  --tracking-title: -0.012em;     /* 22pt: -12 */
+  --tracking-large-title: 0.008em; /* 26pt:  +8 */
+  /* macOS focus ring is a soft accent-coloured glow, not a hard outline. */
+  --focus-ring: 3px solid color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+/* ---------------------------------------------------------------------------
+ * Shared application of the tokens
+ * ------------------------------------------------------------------------ */
+body {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  letter-spacing: var(--letter-spacing-ui);
+  /* Let the OS backdrop (Mica / vibrancy) show through. Any opaque colour
+     here silently defeats both. */
+  background: transparent;
+  margin: 0;
+  /* Native apps don't let you select UI chrome text. */
+  user-select: none;
+  cursor: default;
+}
+
+/* macOS renders system text noticeably lighter than Windows does. */
+html[data-platform='darwin'] body {
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --- Title bar ----------------------------------------------------------- */
+.titlebar {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  -webkit-app-region: drag;
+  flex-shrink: 0;
+}
+
+/* Leave room for the real traffic lights, which the OS draws over us.
+   ~78px clears three 14px buttons at 20px pitch from a 10px origin. */
+html[data-platform='darwin'] .titlebar {
+  padding-left: 78px;
+  justify-content: center;
+}
+
+/* In fullscreen macOS hides the traffic lights, so the reserved inset must
+   collapse — apps that hardcode it look visibly broken in fullscreen.
+   Toggle `data-fullscreen` from the main process's enter/leave-full-screen
+   events. */
+html[data-platform='darwin'][data-fullscreen='true'] .titlebar {
+  padding-left: 12px;
+}
+
+/* On Windows the OS draws its buttons on the right via titleBarOverlay, so we
+   respect the reserved region rather than guessing its width. */
+html[data-platform='win32'] .titlebar {
+  padding-left: 12px;
+  padding-right: env(titlebar-area-x, 138px);
+}
+
+/* macOS centres the window title; Windows left-aligns it. */
+.titlebar-title {
+  font-size: var(--font-size-body);
+  font-weight: 600;
+}
+html[data-platform='win32'] .titlebar-title {
+  font-size: var(--font-size-caption);
+  font-weight: 400;
+}
+
+/* Anything interactive inside the drag region must opt back out. */
+.titlebar button,
+.titlebar input,
+.titlebar [role='button'] {
+  -webkit-app-region: no-drag;
+}
+
+/* --- Controls ------------------------------------------------------------ */
+.control {
+  height: var(--control-height);
+  padding: 0 var(--control-padding-x);
+  border-radius: var(--radius-control);
+  font-family: inherit;
+  font-size: var(--font-size-body);
+  letter-spacing: inherit;
+}
+
+.control:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/*
+ * The signature difference in button rendering:
+ * Windows 11 buttons have a subtle bottom "keyline" border that is darker than
+ * the rest of the stroke. macOS buttons have a soft drop shadow and a top
+ * highlight instead. Reproducing the right one per platform does more for
+ * perceived nativeness than matching the fill colour exactly.
+ */
+html[data-platform='win32'] .control {
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom-color: rgba(0, 0, 0, 0.35);
+}
+
+html[data-platform='darwin'] .control {
+  border: 0.5px solid rgba(0, 0, 0, 0.12);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.08), inset 0 0.5px 0 rgba(255, 255, 255, 0.35);
+}
+
+/* --- Motion -------------------------------------------------------------- */
+/* Windows uses a distinctly decelerating curve; macOS is closer to ease-out
+   and consistently faster. */
+html[data-platform='win32'] {
+  --motion-fast: 150ms cubic-bezier(0, 0, 0, 1);
+  --motion-normal: 250ms cubic-bezier(0, 0, 0, 1);
+}
+html[data-platform='darwin'] {
+  --motion-fast: 120ms cubic-bezier(0.25, 0.1, 0.25, 1);
+  --motion-normal: 200ms cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "name": "ez-screen-record",
+  "version": "1.0.0",
+  "description": "A minimal screen recorder for tutorial videos",
+  "main": "dist-main/main/main.js",
+  "author": "joket",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:vite\" \"npm:dev:main\"",
+    "dev:vite": "vite",
+    "dev:main": "npm run build:main && cross-env NODE_ENV=development electron .",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:renderer": "vite build",
+    "build": "npm run build:main && npm run build:renderer",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --win"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.17",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3"
+  },
+  "dependencies": {
+    "@fluentui/react-components": "^9.56.8",
+    "@fluentui/react-icons": "^2.0.270",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "build": {
+    "appId": "com.joket.ezscreenrecord",
+    "productName": "Ez Screen Record",
+    "files": [
+      "dist-main/**/*",
+      "dist/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
