@@ -107,16 +107,6 @@ const useStyles = makeStyles({
     zIndex: 1,
     borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
   },
-  // Toolbar mode: the window is only as tall as this row, so the border reads
-  // as a stray line, and the controls need room to breathe rather than being
-  // squeezed against the edges.
-  controlBarToolbar: {
-    borderTop: 'none',
-    justifyContent: 'center',
-    gap: '10px',
-    padding: '0 16px',
-    height: '100%',
-  },
   roundBtn: {
     width: '40px',
     height: '40px',
@@ -762,6 +752,40 @@ export function App() {
     void window.ez.window.setHideFromCapture(settings.recording.hideToolbarFromCapture);
   }, [settings.recording.hideToolbarFromCapture, loaded]);
 
+  // --- Recording toolbar -----------------------------------------------------
+  // The toolbar runs in its own window (so its menus are not clipped), which
+  // means it holds no state of its own — everything it renders is pushed here,
+  // and everything it does comes back as a command.
+  const activeSourceName =
+    sources.find((x) => x.id === settings.recording.screenSourceId)?.name ?? '';
+
+  useEffect(() => {
+    if (state !== 'recording' && state !== 'paused') return;
+    void window.ez.toolbar.send('toolbar:state', {
+      state,
+      elapsed,
+      drawing,
+      micEnabled: settings.recording.micEnabled,
+      micDeviceId: settings.recording.micDeviceId,
+      mics,
+      cameraEnabled: settings.camera.enabled,
+      cameraDeviceId: settings.camera.deviceId,
+      cams,
+      sourceName: activeSourceName,
+    });
+  }, [
+    state,
+    elapsed,
+    drawing,
+    settings.recording.micEnabled,
+    settings.recording.micDeviceId,
+    settings.camera.enabled,
+    settings.camera.deviceId,
+    mics,
+    cams,
+    activeSourceName,
+  ]);
+
   // The on-screen bubble is draggable in place; mirror its geometry back so the
   // app preview and the desktop bubble never disagree.
   useEffect(
@@ -839,6 +863,34 @@ export function App() {
     });
   }, [toggleRecord, togglePause, toggleDrawing, clearDrawing]);
 
+  // Commands coming back from the toolbar window.
+  useEffect(() => {
+    const offs = [
+      window.ez.on('toolbar:stop', () => stopRecording()),
+      window.ez.on('toolbar:togglePause', () => togglePause()),
+      window.ez.on('toolbar:toggleDraw', () => toggleDrawing()),
+      window.ez.on('toolbar:pickSource', () => {
+        refreshSources();
+        setSourceDialogOpen(true);
+        // The picker lives in the main window, which is hidden during a take.
+        void window.ez.window.setToolbarMode(false);
+      }),
+      window.ez.on('toolbar:setMicEnabled', (v: boolean) =>
+        setSettings((p) => ({ ...p, recording: { ...p.recording, micEnabled: v } })),
+      ),
+      window.ez.on('toolbar:setMicDevice', (id: string) =>
+        setSettings((p) => ({ ...p, recording: { ...p.recording, micDeviceId: id } })),
+      ),
+      window.ez.on('toolbar:setCameraEnabled', (v: boolean) =>
+        setSettings((p) => ({ ...p, camera: { ...p.camera, enabled: v } })),
+      ),
+      window.ez.on('toolbar:setCameraDevice', (id: string) =>
+        setSettings((p) => ({ ...p, camera: { ...p.camera, deviceId: id } })),
+      ),
+    ];
+    return () => offs.forEach((off) => off());
+  }, [stopRecording, togglePause, toggleDrawing, refreshSources]);
+
   // --- Image overlays --------------------------------------------------------
   const addImages = (files: FileList | null) => {
     if (!files) return;
@@ -906,13 +958,8 @@ export function App() {
           toast that outstayed its timeout blocked the primary action. */}
       <Toaster toasterId={toasterId} position="top-end" offset={{ vertical: 40 }} />
 
-      {/* Title bar. Also hidden in toolbar mode — the bar is only 64px tall
-          and the controls themselves are what matter there; the whole strip
-          stays draggable via the control bar's own drag region. -------- */}
-      <div
-        className={`${s.titlebar} titlebar`}
-        style={busy && state !== 'countdown' ? { display: 'none' } : undefined}
-      >
+      {/* Title bar ------------------------------------------------------- */}
+      <div className={`${s.titlebar} titlebar`}>
         <div className={s.titleText}>
           {state === 'recording' && <div className="rec-dot" />}
           <Text size={200} weight="semibold">
@@ -949,10 +996,8 @@ export function App() {
         </div>
       </div>
 
-      {/* Stage. Hidden during a take: the window is a compact toolbar then,
-          and the preview would only be mirroring the desktop that is already
-          on screen — at the cost of a second capture of it. ------------- */}
-      <div className={s.body} style={busy && state !== 'countdown' ? { display: 'none' } : undefined}>
+      {/* Stage ------------------------------------------------------------ */}
+      <div className={s.body}>
         <input
           ref={fileInputRef}
           type="file"
@@ -1009,11 +1054,7 @@ export function App() {
 
       {/* Control bar. Google Meet layout: pill split-buttons for devices,
           round icon buttons for actions, primary action far right. -------- */}
-      <div
-        className={`${s.controlBar} ${
-          busy && state !== 'countdown' ? `${s.controlBarToolbar} toolbar-drag` : ''
-        }`}
-      >
+      <div className={s.controlBar}>
         <PillControl
           label="Microphone"
           onIcon={<MicRegular />}
@@ -1302,9 +1343,7 @@ export function App() {
           </MenuPopover>
         </Menu>
 
-        {/* In toolbar mode the row is centred, so a growing spacer would just
-            shove the transport off to the right. */}
-        {!(busy && state !== 'countdown') && <div className={s.spacer} />}
+        <div className={s.spacer} />
 
         {/* Elapsed time only once there is something to time. */}
         {busy && state !== 'countdown' && <Text className={s.timer}>{formatTime(elapsed)}</Text>}

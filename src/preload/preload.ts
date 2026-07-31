@@ -23,7 +23,14 @@ const api = {
       ipcRenderer.invoke('control:send', channel, payload),
   },
 
-  /** The on-screen camera bubble shown while recording (Mode A). */
+  /** The Zoom-style control strip shown while recording. */
+  toolbar: {
+    setInteractive: (v: boolean) => ipcRenderer.invoke('toolbar:setInteractive', v),
+    send: (channel: string, payload?: unknown) =>
+      ipcRenderer.invoke('toolbar:send', channel, payload),
+  },
+
+  /** The on-screen camera bubble shown while recording. */
   cameraOverlay: {
     show: (displayId?: string) => ipcRenderer.invoke('cameraOverlay:show', displayId),
     hide: () => ipcRenderer.invoke('cameraOverlay:hide'),

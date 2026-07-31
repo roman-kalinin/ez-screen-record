@@ -17,6 +17,7 @@ export default defineConfig({
         main: resolve(__dirname, 'src/renderer/index.html'),
         overlay: resolve(__dirname, 'src/renderer/overlay.html'),
         camera: resolve(__dirname, 'src/renderer/camera.html'),
+        toolbar: resolve(__dirname, 'src/renderer/toolbar.html'),
       },
     },
   },

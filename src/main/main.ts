@@ -60,6 +60,8 @@ let overlayWindow: BrowserWindow | null = null;
  * protected — being captured is the whole point.
  */
 let cameraOverlayWindow: BrowserWindow | null = null;
+/** Zoom-style control strip shown while recording. See createToolbarWindow. */
+let toolbarWindow: BrowserWindow | null = null;
 /** Active ffmpeg-backed recording, when the crisp engine is in use. */
 let nativeRecorder: NativeRecorder | null = null;
 
@@ -67,7 +69,7 @@ let nativeRecorder: NativeRecorder | null = null;
 const APP_ROOT = path.join(__dirname, '..', '..');
 
 /** Resolve a renderer entry to either the dev server or the built file. */
-function rendererUrl(page: 'index' | 'overlay' | 'camera'): string {
+function rendererUrl(page: 'index' | 'overlay' | 'camera' | 'toolbar'): string {
   if (isDev) return `${DEV_SERVER}/${page}.html`;
   return `file://${path.join(APP_ROOT, 'dist', `${page}.html`)}`;
 }
@@ -142,6 +144,7 @@ function createControlWindow() {
     // The overlays are child concepts; without the controller they are orphaned.
     overlayWindow?.close();
     cameraOverlayWindow?.close();
+    toolbarWindow?.close();
   });
 
   // Open external links in the real browser instead of a new Electron window.
@@ -304,47 +307,6 @@ function createCameraOverlayWindow(display: Electron.Display): BrowserWindow {
 }
 
 /**
- * Collapse the control window into a compact floating toolbar for the duration
- * of a take, the way Zoom's screen-share bar behaves, and restore it after.
- *
- * The preview pane is worse than useless while recording: it shows the desktop
- * that is already on screen, and it costs a second capture of the same display.
- * The toolbar keeps the controls that are actually wanted mid-take — source,
- * mic, camera, drawing, stop — in a bar small enough to leave sitting over the
- * work. It stays content-protected, so it never appears in the recording.
- */
-let preToolbarBounds: Electron.Rectangle | null = null;
-
-function enterToolbarMode() {
-  if (!controlWindow || controlWindow.isDestroyed()) return;
-  if (preToolbarBounds) return;  // already collapsed
-
-  preToolbarBounds = controlWindow.getBounds();
-
-  // Wide enough for the whole control row. The mic and camera pills are ~76px
-  // each, then five 40px round buttons, the timer, pause and stop, plus gaps —
-  // sizing this too tightly clipped the pills off the left edge entirely.
-  const width = 760;
-  const height = 68;
-  const workArea = screen.getPrimaryDisplay().workArea;
-  controlWindow.setMinimumSize(width, height);
-  controlWindow.setBounds({
-    width,
-    height,
-    x: Math.round(workArea.x + (workArea.width - width) / 2),
-    // Near the top, like Zoom's share bar, clear of the taskbar.
-    y: workArea.y + 12,
-  });
-  controlWindow.setAlwaysOnTop(true, 'screen-saver');
-  controlWindow.setResizable(false);
-  // Keep the toolbar out of the recording. The window stays fully visible to
-  // the user; it is only the capture that cannot see it.
-  if (!process.env.EZ_NO_CONTENT_PROTECTION) {
-    controlWindow.setContentProtection(hideToolbarFromCapture);
-  }
-}
-
-/**
  * Whether the toolbar is hidden from screen capture during a take.
  *
  * On by default: the recorder's own chrome has no business appearing in a
@@ -354,25 +316,92 @@ function enterToolbarMode() {
  */
 let hideToolbarFromCapture = true;
 
-function exitToolbarMode() {
-  if (!controlWindow || controlWindow.isDestroyed()) return;
-  if (!preToolbarBounds) return;
-
-  controlWindow.setResizable(true);
-  controlWindow.setMinimumSize(560, 420);
-  controlWindow.setBounds(preToolbarBounds);
-  // Back to the standing rule: the panel is always hidden from capture when
-  // not recording, so the live preview never mirrors itself.
-  if (!process.env.EZ_NO_CONTENT_PROTECTION) {
-    controlWindow.setContentProtection(true);
-  }
-  // Only drop always-on-top if the user had not pinned it themselves.
-  if (!userPinnedOnTop) controlWindow.setAlwaysOnTop(false);
-  preToolbarBounds = null;
-}
-
 /** Whether the user pinned the window, so toolbar mode does not un-pin it. */
 let userPinnedOnTop = false;
+
+/**
+ * The recording toolbar: a transparent, full-width, always-on-top strip that
+ * hosts the Zoom-style control bar while a take is running.
+ *
+ * It is a SEPARATE window rather than the control window resized down, and the
+ * reason is popups. A 68px-tall window clips everything it renders — dropdowns
+ * opened inside it, tooltips, the source picker — because a BrowserWindow
+ * cannot draw outside its own bounds. Giving the toolbar a window that spans
+ * the display and is transparent everywhere except the bar itself lets menus
+ * and tooltips lay out normally in the empty space around it.
+ *
+ * Click-through by default, so the transparent area never swallows input; the
+ * renderer opts the bar back in.
+ */
+function createToolbarWindow(display: Electron.Display): BrowserWindow {
+  if (toolbarWindow && !toolbarWindow.isDestroyed()) {
+    toolbarWindow.setBounds(display.bounds);
+    return toolbarWindow;
+  }
+
+  toolbarWindow = new BrowserWindow({
+    ...display.bounds,
+    transparent: true,
+    frame: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    fullscreenable: false,
+    type: 'toolbar',
+    show: false,
+    webPreferences: {
+      preload: preloadPath(),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  });
+
+  toolbarWindow.loadURL(rendererUrl('toolbar'));
+  toolbarWindow.setAlwaysOnTop(true, 'screen-saver');
+  toolbarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  toolbarWindow.setIgnoreMouseEvents(true, { forward: true });
+
+  const forceClickThrough = () => {
+    if (toolbarWindow && !toolbarWindow.isDestroyed()) {
+      toolbarWindow.setIgnoreMouseEvents(true, { forward: true });
+    }
+  };
+  toolbarWindow.webContents.on('render-process-gone', forceClickThrough);
+  toolbarWindow.webContents.on('unresponsive', forceClickThrough);
+  toolbarWindow.on('hide', forceClickThrough);
+
+  toolbarWindow.on('closed', () => {
+    toolbarWindow = null;
+  });
+
+  return toolbarWindow;
+}
+
+function enterToolbarMode() {
+  if (!controlWindow || controlWindow.isDestroyed()) return;
+
+  const win = createToolbarWindow(screen.getPrimaryDisplay());
+  if (!process.env.EZ_NO_CONTENT_PROTECTION) {
+    win.setContentProtection(hideToolbarFromCapture);
+  }
+  win.showInactive();
+  // The main window steps aside for the take; the toolbar replaces it.
+  controlWindow.hide();
+}
+
+function exitToolbarMode() {
+  if (toolbarWindow && !toolbarWindow.isDestroyed()) {
+    toolbarWindow.setIgnoreMouseEvents(true, { forward: true });
+    toolbarWindow.hide();
+  }
+  if (!controlWindow || controlWindow.isDestroyed()) return;
+  controlWindow.show();
+  if (!userPinnedOnTop) controlWindow.setAlwaysOnTop(false);
+}
 
 // ---------------------------------------------------------------------------
 // IPC
@@ -535,11 +564,29 @@ function registerIpc() {
   /** Whether the toolbar is invisible to screen capture during a take. */
   ipcMain.handle('win:setHideFromCapture', (_e, hide: boolean) => {
     hideToolbarFromCapture = hide;
-    if (preToolbarBounds && controlWindow && !process.env.EZ_NO_CONTENT_PROTECTION) {
+    if (toolbarWindow && !toolbarWindow.isDestroyed() &&
+        !process.env.EZ_NO_CONTENT_PROTECTION) {
       // Applies immediately when toggled mid-take.
-      controlWindow.setContentProtection(hide);
+      toolbarWindow.setContentProtection(hide);
     }
     return hide;
+  });
+
+  /**
+   * Let the toolbar swallow input only where it actually draws. The window
+   * spans the display so its popups are not clipped, so the transparent
+   * remainder must stay click-through or the desktop becomes unusable.
+   */
+  ipcMain.handle('toolbar:setInteractive', (_e, interactive: boolean) => {
+    if (!toolbarWindow || toolbarWindow.isDestroyed()) return false;
+    toolbarWindow.setIgnoreMouseEvents(!interactive, { forward: true });
+    return true;
+  });
+
+  /** Relay control window -> toolbar (state, settings, device lists). */
+  ipcMain.handle('toolbar:send', (_e, channel: string, payload: unknown) => {
+    toolbarWindow?.webContents.send(channel, payload);
+    return true;
   });
 
   // --- Saving --------------------------------------------------------------
