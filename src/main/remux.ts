@@ -13,10 +13,49 @@ import * as path from 'path';
 
 let ffmpegChecked = false;
 let ffmpegAvailable = false;
+let resolvedFfmpeg: string | null = null;
+
+/**
+ * Locate the ffmpeg binary.
+ *
+ * An installed app cannot assume ffmpeg is on PATH, so a bundled copy under
+ * resources/ffmpeg wins when present. Note that `ffmpeg-static` is NOT a valid
+ * source for it: this app needs `ddagrab`, `libplacebo` and `h264_nvenc`, and
+ * that package ships a minimal build with none of them. Use a full build
+ * (gyan.dev "full", or BtbN win64-gpl).
+ *
+ * Falling back to PATH keeps `npm run dev` working without a vendored binary.
+ */
+export function ffmpegPath(): string {
+  if (resolvedFfmpeg) return resolvedFfmpeg;
+
+  const exe = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+  const bundled = [
+    // Packaged: extraResources lands beside app.asar.
+    path.join(process.resourcesPath ?? '', 'ffmpeg', exe),
+    // Dev: a binary dropped into the repo for testing the packaged layout.
+    path.join(process.cwd(), 'resources', 'ffmpeg', exe),
+  ];
+
+  resolvedFfmpeg = bundled.find((p) => {
+    try {
+      return fs.existsSync(p);
+    } catch {
+      return false;
+    }
+  }) ?? 'ffmpeg';
+
+  return resolvedFfmpeg;
+}
+
+/** True when ffmpeg came from the app bundle rather than the user's PATH. */
+export function ffmpegIsBundled(): boolean {
+  return ffmpegPath() !== 'ffmpeg';
+}
 
 function runFfmpeg(args: string[], timeoutMs: number): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve) => {
-    const proc = spawn('ffmpeg', args, { windowsHide: true });
+    const proc = spawn(ffmpegPath(), args, { windowsHide: true });
     let stderr = '';
     const timer = setTimeout(() => {
       proc.kill();

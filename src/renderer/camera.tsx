@@ -27,7 +27,50 @@ declare global {
 /** Smallest the bubble may be, as a fraction of the frame — matches LayoutStage. */
 const MIN_SIZE = 0.05;
 
-type DragMode = { kind: 'move' | 'resize'; startX: number; startY: number; orig: Rect };
+type Corner = 'nw' | 'ne' | 'sw' | 'se';
+
+type DragMode = { kind: 'move' | 'resize'; corner: Corner; startX: number; startY: number; orig: Rect };
+
+/**
+ * Resize by dragging one corner; the opposite corner stays pinned.
+ *
+ * Mirrors LayoutStage.resizeRect. Kept as its own copy rather than imported:
+ * this file is a separate Vite entry point that ships to the on-screen overlay
+ * window, and pulling in the stage would drag Fluent's whole component tree
+ * onto the display being recorded.
+ */
+function resizeRect(orig: Rect, corner: Corner, dx: number, dy: number): Rect {
+  const west = corner === 'nw' || corner === 'sw';
+  const north = corner === 'nw' || corner === 'ne';
+  const right = orig.x + orig.w;
+  const bottom = orig.y + orig.h;
+
+  let { x, y, w, h } = orig;
+
+  if (west) {
+    x = Math.min(Math.max(orig.x + dx, 0), right - MIN_SIZE);
+    w = right - x;
+  } else {
+    w = Math.max(MIN_SIZE, Math.min(orig.w + dx, 1 - orig.x));
+  }
+
+  if (north) {
+    y = Math.min(Math.max(orig.y + dy, 0), bottom - MIN_SIZE);
+    h = bottom - y;
+  } else {
+    h = Math.max(MIN_SIZE, Math.min(orig.h + dy, 1 - orig.y));
+  }
+
+  return { ...orig, x, y, w, h };
+}
+
+/** Anchor placement, matching the preview stage. */
+const CORNERS: Array<{ id: Corner; css: React.CSSProperties }> = [
+  { id: 'nw', css: { left: -9, top: -9, cursor: 'nwse-resize' } },
+  { id: 'ne', css: { right: -9, top: -9, cursor: 'nesw-resize' } },
+  { id: 'sw', css: { left: -9, bottom: -9, cursor: 'nesw-resize' } },
+  { id: 'se', css: { right: -9, bottom: -9, cursor: 'nwse-resize' } },
+];
 
 function CameraBubble() {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -38,6 +81,12 @@ function CameraBubble() {
   const [config, setConfig] = useState<CameraOverlay | null>(null);
   const [rect, setRect] = useState<Rect | null>(null);
   const [hasFeed, setHasFeed] = useState(false);
+  /**
+   * Show the resize frame. On when the pointer is over the bubble, and pinned
+   * on for the whole of a drag — a resize starts at a corner and immediately
+   * leaves it, so a pure :hover frame would vanish the moment it was grabbed.
+   */
+  const [showFrame, setShowFrame] = useState(false);
 
   // Keep the latest rect available inside stable pointer handlers.
   const rectRef = useRef<Rect | null>(null);
@@ -134,14 +183,19 @@ function CameraBubble() {
    * release.
    */
   const bubbleRef = useRef<HTMLDivElement>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
   const latestRef = useRef<Rect | null>(null);
 
-  const onPointerDown = (e: React.PointerEvent, kind: 'move' | 'resize') => {
+  const onPointerDown = (
+    e: React.PointerEvent,
+    kind: 'move' | 'resize',
+    corner: Corner = 'se',
+  ) => {
     const orig = rectRef.current;
     if (!orig) return;
     e.stopPropagation();
     e.preventDefault();
-    dragRef.current = { kind, startX: e.clientX, startY: e.clientY, orig };
+    dragRef.current = { kind, corner, startX: e.clientX, startY: e.clientY, orig };
     latestRef.current = orig;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
@@ -160,16 +214,15 @@ function CameraBubble() {
       const y = Math.min(Math.max(drag.orig.y + dy, 0), 1 - drag.orig.h);
       next = { ...drag.orig, x, y };
     } else {
-      const maxW = Math.max(1 - drag.orig.x, MIN_SIZE);
-      const maxH = Math.max(1 - drag.orig.y, MIN_SIZE);
-      const w = Math.max(MIN_SIZE, Math.min(drag.orig.w + dx, maxW));
-      const h = Math.max(MIN_SIZE, Math.min(drag.orig.h + dy, maxH));
-      next = { ...drag.orig, w, h };
+      next = resizeRect(drag.orig, drag.corner, dx, dy);
     }
 
     latestRef.current = next;
-    const node = bubbleRef.current;
-    if (node) {
+    // Media box and its selection frame are siblings (the frame must sit
+    // outside the clip so a circular bubble cannot swallow the anchors), so
+    // both are painted here rather than one riding along with the other.
+    for (const node of [bubbleRef.current, frameRef.current]) {
+      if (!node) continue;
       node.style.left = `${next.x * 100}%`;
       node.style.top = `${next.y * 100}%`;
       node.style.width = `${next.w * 100}%`;
@@ -177,7 +230,7 @@ function CameraBubble() {
     }
   };
 
-  const onPointerUp = () => {
+  const onPointerUp = (e: React.PointerEvent) => {
     const drag = dragRef.current;
     const final = latestRef.current;
     dragRef.current = null;
@@ -187,13 +240,30 @@ function CameraBubble() {
       // Keep the app preview in lockstep with the on-screen bubble.
       window.ez.control.send('control:cameraRect', final);
     }
+    // leaveBubble() bailed out for the whole gesture to protect pointer
+    // capture, so the hover state is settled here instead. If the pointer
+    // ended up off the bubble, hand the desktop back.
+    if (drag) {
+      const over = (e.target as HTMLElement | null)?.closest('[data-cam-hit]');
+      if (!over) {
+        setShowFrame(false);
+        window.ez.cameraOverlay.setInteractive(false);
+      }
+    }
   };
 
   // The window is click-through by default; enable interaction only while the
   // pointer is actually over the bubble so the rest of the desktop stays live.
-  const enterBubble = () => window.ez.cameraOverlay.setInteractive(true);
+  const enterBubble = () => {
+    setShowFrame(true);
+    window.ez.cameraOverlay.setInteractive(true);
+  };
   const leaveBubble = () => {
-    if (!dragRef.current) window.ez.cameraOverlay.setInteractive(false);
+    // A drag holds pointer capture and routinely travels outside the element it
+    // started on; releasing interactivity there would drop the gesture.
+    if (dragRef.current) return;
+    setShowFrame(false);
+    window.ez.cameraOverlay.setInteractive(false);
   };
 
   if (!config || !config.enabled || !config.deviceId || !rect) return null;
@@ -211,6 +281,7 @@ function CameraBubble() {
     >
       <div
         ref={bubbleRef}
+        data-cam-hit=""
         style={{
           position: 'absolute',
           left: `${rect.x * 100}%`,
@@ -222,7 +293,6 @@ function CameraBubble() {
           boxShadow: config.shadow ? '0 6px 20px rgba(0,0,0,0.5)' : 'none',
           visibility: hasFeed ? 'visible' : 'hidden',
           cursor: 'move',
-          // This element is the only interactive surface in the window.
           pointerEvents: 'auto',
         }}
         onPointerEnter={enterBubble}
@@ -241,23 +311,63 @@ function CameraBubble() {
             transform: config.mirrored ? 'scaleX(-1)' : undefined,
           }}
         />
-        {/* Resize handle, bottom-right. */}
+      </div>
+
+      {/* Selection frame + anchors, drawn as a SIBLING of the media box.
+          Inside it they were clipped away by the shape mask — invisible on a
+          circle, half-eaten on a rounded rect. Always rectangular so the drag
+          bounds read clearly around a round bubble. It appears on hover (and
+          stays for the duration of a drag) so it is out of the way otherwise.
+          `showFrame` never blocks recording: this window is excluded from
+          capture, and the bubble beneath is what the recorder actually sees. */}
+      {hasFeed && (
         <div
-          onPointerDown={(e) => onPointerDown(e, 'resize')}
+          ref={frameRef}
           style={{
             position: 'absolute',
-            right: '-2px',
-            bottom: '-2px',
-            width: '16px',
-            height: '16px',
-            borderRadius: '4px',
-            background: '#0a84ff',
-            border: '2px solid #fff',
-            cursor: 'nwse-resize',
-            pointerEvents: 'auto',
+            left: `${rect.x * 100}%`,
+            top: `${rect.y * 100}%`,
+            width: `${rect.w * 100}%`,
+            height: `${rect.h * 100}%`,
+            outline: showFrame ? '1.5px solid #0a84ff' : 'none',
+            // Anchors are the only hit targets; the frame itself must let
+            // pointer events through to the media box for move-drags.
+            pointerEvents: 'none',
+            opacity: showFrame ? 1 : 0,
+            transition: 'opacity 120ms ease',
           }}
-        />
-      </div>
+        >
+          {CORNERS.map((c) => (
+            <div
+              key={c.id}
+              data-cam-hit=""
+              onPointerEnter={enterBubble}
+              onPointerLeave={leaveBubble}
+              onPointerDown={(e) => onPointerDown(e, 'resize', c.id)}
+              style={{
+                position: 'absolute',
+                width: 18,
+                height: 18,
+                display: 'grid',
+                placeItems: 'center',
+                pointerEvents: showFrame ? 'auto' : 'none',
+                ...c.css,
+              }}
+            >
+              <div
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: 2,
+                  background: '#fff',
+                  border: '2px solid #0a84ff',
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.45)',
+                }}
+              />
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

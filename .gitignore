@@ -4,3 +4,12 @@ dist-main/
 dist_electron/
 *.log
 .DS_Store
+
+# Packaged installers.
+release/
+.ffmpeg-tmp/
+
+# The bundled ffmpeg is a ~150MB binary fetched by `npm run fetch:ffmpeg`;
+# the README explaining which build to use is tracked, the binary is not.
+resources/ffmpeg/*
+!resources/ffmpeg/README.md

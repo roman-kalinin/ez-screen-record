@@ -28,6 +28,22 @@ const isDev = process.env.NODE_ENV === 'development';
 const DEV_SERVER = 'http://localhost:5273';
 
 /**
+ * The window/taskbar icon.
+ *
+ * The installer stamps the icon into the .exe itself, so packaged builds get it
+ * for free; this is what stops the dev run (and the taskbar grouping) from
+ * falling back to Electron's default. Resolved from the app root in dev and
+ * from the asar in production.
+ */
+function appIconPath(): string {
+  const candidates = [
+    path.join(app.getAppPath(), 'build', 'icon.ico'),
+    path.join(process.resourcesPath ?? '', 'build', 'icon.ico'),
+  ];
+  return candidates.find((p) => fs.existsSync(p)) ?? '';
+}
+
+/**
  * Logging that can never take the app down.
  *
  * When the app is launched detached (or its parent terminal closes) stdout and
@@ -99,6 +115,7 @@ function createControlWindow() {
     minHeight: 420,
     show: false,
     frame: false,
+    icon: appIconPath() || undefined,
     // Deliberately NOT using backgroundMaterial:'mica'. Mica conflicts with
     // setContentProtection — the combination is unstable and lets the window
     // appear in its own capture, producing the recursive-mirror effect. A
@@ -853,6 +870,12 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    // Without an explicit AppUserModelID, Windows groups the taskbar button
+    // under Electron's own identity — wrong icon, wrong name, and shortcuts
+    // pinned from the installer do not match the running app. Must agree with
+    // build.appId in package.json.
+    if (process.platform === 'win32') app.setAppUserModelId('com.joket.ezscreenrecord');
+
     // Grant getDisplayMedia requests using the source the renderer already
     // picked. The renderer uses the legacy chromeMediaSource constraints path,
     // but this handler keeps newer Electron versions working too.

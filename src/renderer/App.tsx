@@ -1109,6 +1109,9 @@ export function App() {
           onCameraMirror={(mirrored) =>
             setSettings((p) => ({ ...p, camera: { ...p.camera, mirrored } }))
           }
+          onCameraShadow={(shadow) =>
+            setSettings((p) => ({ ...p, camera: { ...p.camera, shadow } }))
+          }
           suspendCapture={captureSuspended}
         />
         )}
@@ -1330,17 +1333,12 @@ export function App() {
                 ))}
               </Dropdown>
 
-              <Switch
-                checked={settings.camera.shadow}
-                label="Camera drop shadow"
-                onChange={(_e, d) =>
-                  setSettings((p) => ({ ...p, camera: { ...p.camera, shadow: d.checked } }))
-                }
-              />
-
+              {/* Shape, mirror and drop shadow live on the camera itself —
+                  click the bubble in the preview to reach them. */}
               <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
                 While recording, the camera appears on your desktop where you can drag and
-                resize it, and lands in the video exactly as you see it.
+                resize it, and lands in the video exactly as you see it. Click the camera to
+                change its shape, mirroring and drop shadow.
               </Text>
 
               <Divider />

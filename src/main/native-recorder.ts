@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { hasFfmpeg } from './remux';
+import { hasFfmpeg, ffmpegPath } from './remux';
 
 /**
  * GPU-composited capture: the same architecture OBS uses, driven by ffmpeg.
@@ -46,7 +46,7 @@ let nvencCache: Promise<boolean> | null = null;
 function hasNvenc444(): Promise<boolean> {
   if (nvencCache) return nvencCache;
   nvencCache = new Promise((resolve) => {
-    const proc = spawn('ffmpeg', ['-hide_banner', '-h', 'encoder=h264_nvenc'], {
+    const proc = spawn(ffmpegPath(), ['-hide_banner', '-h', 'encoder=h264_nvenc'], {
       windowsHide: true,
     });
     let out = '';
@@ -146,7 +146,12 @@ export class NativeRecorder {
 
   async start(opts: NativeRecordOptions): Promise<void> {
     if (this.proc) throw new Error('A native recording is already running.');
-    if (!(await hasFfmpeg())) throw new Error('ffmpeg was not found on PATH.');
+    if (!(await hasFfmpeg())) {
+      throw new Error(
+        'ffmpeg was not found. Install a full ffmpeg build (winget install Gyan.FFmpeg) ' +
+          'or place ffmpeg.exe in the app’s resources/ffmpeg folder.',
+      );
+    }
 
     fs.mkdirSync(path.dirname(opts.outputPath), { recursive: true });
     this.outputPath = opts.outputPath;
@@ -372,7 +377,7 @@ export class NativeRecorder {
 
     args.push(opts.outputPath);
 
-    this.proc = spawn('ffmpeg', args, { windowsHide: true });
+    this.proc = spawn(ffmpegPath(), args, { windowsHide: true });
     this.startedAt = Date.now();
     this.stderrTail = [];
 
@@ -489,7 +494,7 @@ function explainFailure(stderr: string, code: number | null): string {
 /** Is a given ffmpeg filter compiled into this build? */
 function hasFilter(name: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const proc = spawn('ffmpeg', ['-hide_banner', '-filters'], { windowsHide: true });
+    const proc = spawn(ffmpegPath(), ['-hide_banner', '-filters'], { windowsHide: true });
     let out = '';
     proc.stdout.on('data', (d) => (out += d));
     proc.on('error', () => resolve(false));
@@ -505,7 +510,7 @@ function hasFilter(name: string): Promise<boolean> {
 export async function listDshowDevices(): Promise<{ audio: string[]; video: string[] }> {
   return new Promise((resolve) => {
     const proc = spawn(
-      'ffmpeg',
+      ffmpegPath(),
       ['-hide_banner', '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'],
       { windowsHide: true },
     );

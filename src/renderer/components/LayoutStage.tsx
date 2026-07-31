@@ -5,6 +5,7 @@ import {
   CircleRegular,
   RectangleLandscapeRegular,
   FlipHorizontalRegular,
+  SquareShadowRegular,
 } from '@fluentui/react-icons';
 import type { CameraOverlay, ImageOverlay, OverlayShape, Rect } from '../../shared/types';
 
@@ -62,6 +63,26 @@ const useStyles = makeStyles({
     objectFit: 'cover',
     display: 'block',
   },
+  /**
+   * Selection chrome for the camera.
+   *
+   * A sibling of the clipped media box, not a child of it. The media box needs
+   * `overflow: hidden` to give the bubble its shape, which also clips anything
+   * drawn inside it — a circle swallowed the corner handles whole. Drawing the
+   * frame and its anchors as an overlay keeps them fully visible for every
+   * shape, and it is always a plain rectangle so the drag bounds stay readable
+   * even when the media inside is a circle.
+   */
+  frame: {
+    position: 'absolute',
+    // The frame is drawn by its children; the box itself must not swallow
+    // pointer events meant for the media underneath.
+    pointerEvents: 'none',
+    outline: `1.5px solid ${tokens.colorBrandStroke1}`,
+    outlineOffset: 0,
+    zIndex: 4,
+  },
+  /** Selection outline for images, which are unclipped and need no anchors. */
   selected: {
     outline: `2px solid ${tokens.colorBrandStroke1}`,
     outlineOffset: '1px',
@@ -77,6 +98,34 @@ const useStyles = makeStyles({
     bottom: '-7px',
     cursor: 'nwse-resize',
   },
+  /**
+   * One corner anchor. Sized generously relative to its visual dot: the old
+   * 12px target was fiddly to grab, and half of it sat outside the clipped
+   * parent so the usable area was smaller still.
+   */
+  anchor: {
+    position: 'absolute',
+    width: '18px',
+    height: '18px',
+    display: 'grid',
+    placeItems: 'center',
+    // Anchors are the only interactive part of the non-interactive frame.
+    pointerEvents: 'auto',
+    '::after': {
+      content: '""',
+      display: 'block',
+      width: '10px',
+      height: '10px',
+      borderRadius: '2px',
+      background: '#fff',
+      border: `2px solid ${tokens.colorBrandStroke1}`,
+      boxShadow: '0 1px 3px rgba(0,0,0,0.45)',
+    },
+  },
+  anchorNW: { left: '-9px', top: '-9px', cursor: 'nwse-resize' },
+  anchorNE: { right: '-9px', top: '-9px', cursor: 'nesw-resize' },
+  anchorSW: { left: '-9px', bottom: '-9px', cursor: 'nesw-resize' },
+  anchorSE: { right: '-9px', bottom: '-9px', cursor: 'nwse-resize' },
   hint: {
     position: 'absolute',
     left: '8px',
@@ -106,7 +155,17 @@ const useStyles = makeStyles({
   },
 });
 
-type DragMode = { kind: 'move' | 'resize'; id: string; startX: number; startY: number; orig: Rect };
+/** Which corner a resize is anchored from. 'se' keeps the old behaviour. */
+type Corner = 'nw' | 'ne' | 'sw' | 'se';
+
+type DragMode = {
+  kind: 'move' | 'resize';
+  corner: Corner;
+  id: string;
+  startX: number;
+  startY: number;
+  orig: Rect;
+};
 
 interface Props {
   screenSourceId: string | null;
@@ -118,6 +177,7 @@ interface Props {
   onImageRect: (id: string, r: Rect) => void;
   onCameraShape: (s: OverlayShape) => void;
   onCameraMirror: (m: boolean) => void;
+  onCameraShadow: (v: boolean) => void;
   /**
    * Release the webcam and screen capture.
    *
@@ -130,6 +190,54 @@ interface Props {
 
 /** Smallest an overlay may be shrunk to, as a fraction of the frame. */
 const MIN_SIZE = 0.05;
+
+/**
+ * Resize `orig` by dragging one corner, in normalised frame coordinates.
+ *
+ * The corner opposite the one being dragged stays pinned, so the box grows and
+ * shrinks the way the grabbed anchor is moving. Each axis clamps to the frame
+ * edge FIRST and to MIN_SIZE second — the other order lets the minimum defeat
+ * the maximum near an edge and the overlay collapses past its floor.
+ *
+ * Exported so the on-screen camera bubble resizes identically to the preview.
+ */
+export function resizeRect(orig: Rect, corner: Corner, dx: number, dy: number): Rect {
+  const west = corner === 'nw' || corner === 'sw';
+  const north = corner === 'nw' || corner === 'ne';
+
+  // Fixed edges: the opposite corner never moves.
+  const right = orig.x + orig.w;
+  const bottom = orig.y + orig.h;
+
+  let x = orig.x;
+  let y = orig.y;
+  let w = orig.w;
+  let h = orig.h;
+
+  if (west) {
+    x = Math.min(Math.max(orig.x + dx, 0), right - MIN_SIZE);
+    w = right - x;
+  } else {
+    w = Math.max(MIN_SIZE, Math.min(orig.w + dx, 1 - orig.x));
+  }
+
+  if (north) {
+    y = Math.min(Math.max(orig.y + dy, 0), bottom - MIN_SIZE);
+    h = bottom - y;
+  } else {
+    h = Math.max(MIN_SIZE, Math.min(orig.h + dy, 1 - orig.y));
+  }
+
+  return { ...orig, x, y, w, h };
+}
+
+/** The four resize anchors, in the order they are drawn. */
+const CORNERS: Array<{ id: Corner; cls: 'anchorNW' | 'anchorNE' | 'anchorSW' | 'anchorSE' }> = [
+  { id: 'nw', cls: 'anchorNW' },
+  { id: 'ne', cls: 'anchorNE' },
+  { id: 'sw', cls: 'anchorSW' },
+  { id: 'se', cls: 'anchorSE' },
+];
 
 const SHAPES: Array<{ id: OverlayShape; label: string; icon: JSX.Element }> = [
   { id: 'rounded', label: 'Rounded', icon: <RectangleLandscapeRegular /> },
@@ -147,6 +255,7 @@ export function LayoutStage({
   onImageRect,
   onCameraShape,
   onCameraMirror,
+  onCameraShadow,
   suspendCapture = false,
 }: Props) {
   const s = useStyles();
@@ -289,6 +398,13 @@ export function LayoutStage({
    */
   const dragNodeRef = useRef<HTMLElement | null>(null);
   const latestRectRef = useRef<Rect | null>(null);
+  /**
+   * The camera's selection frame, painted alongside the media box during a
+   * gesture. It is a sibling rather than a child (so the clip doesn't eat the
+   * anchors), which means it has to be moved explicitly — a child would have
+   * come along for free.
+   */
+  const camFrameRef = useRef<HTMLDivElement>(null);
 
   const paint = (node: HTMLElement, r: Rect) => {
     node.style.left = `${r.x * 100}%`;
@@ -297,18 +413,30 @@ export function LayoutStage({
     node.style.height = `${r.h * 100}%`;
   };
 
-  const onPointerDown = (e: React.PointerEvent, id: string, kind: 'move' | 'resize') => {
+  const onPointerDown = (
+    e: React.PointerEvent,
+    id: string,
+    kind: 'move' | 'resize',
+    corner: Corner = 'se',
+  ) => {
     e.stopPropagation();
     e.preventDefault();
     const orig = rectFor(id);
     if (!orig) return;
     onSelect(id);
-    dragRef.current = { kind, id, startX: e.clientX, startY: e.clientY, orig };
+    dragRef.current = { kind, corner, id, startX: e.clientX, startY: e.clientY, orig };
     latestRectRef.current = orig;
-    // The resize handle is a child of the overlay box; the box itself is what
-    // must move, so walk up to the positioned ancestor.
+    // Anchors live on the selection frame, which is a sibling of the media box,
+    // so the node to move is looked up by id rather than walked to from the
+    // event target.
     const target = e.currentTarget as HTMLElement;
-    dragNodeRef.current = kind === 'resize' ? target.parentElement : target;
+    dragNodeRef.current =
+      kind === 'move' ? target : (target.closest('[data-overlay-box]') as HTMLElement | null);
+    if (kind === 'resize' && !dragNodeRef.current) {
+      dragNodeRef.current = wrapRef.current?.querySelector(
+        `[data-overlay-id="${id}"]`,
+      ) as HTMLElement | null;
+    }
     target.setPointerCapture(e.pointerId);
     setDragging(true);
   };
@@ -329,18 +457,13 @@ export function LayoutStage({
       const y = Math.min(Math.max(drag.orig.y + dy, 0), 1 - drag.orig.h);
       next = { ...drag.orig, x, y };
     } else {
-      // Clamp to the available space FIRST, then apply the minimum — doing it
-      // the other way round lets the min defeat the max near an edge and the
-      // overlay collapses below its intended minimum size.
-      const maxW = Math.max(1 - drag.orig.x, MIN_SIZE);
-      const maxH = Math.max(1 - drag.orig.y, MIN_SIZE);
-      const w = Math.max(MIN_SIZE, Math.min(drag.orig.w + dx, maxW));
-      const h = Math.max(MIN_SIZE, Math.min(drag.orig.h + dy, maxH));
-      next = { ...drag.orig, w, h };
+      next = resizeRect(drag.orig, drag.corner, dx, dy);
     }
 
     latestRectRef.current = next;
     if (dragNodeRef.current) paint(dragNodeRef.current, next);
+    // Keep the selection frame glued to the media box for the whole gesture.
+    if (drag.id === 'camera' && camFrameRef.current) paint(camFrameRef.current, next);
   }, []);
 
   const onPointerUp = () => {
@@ -397,6 +520,7 @@ export function LayoutStage({
         .map((img) => (
           <div
             key={img.id}
+            data-overlay-box={img.id}
             className={`${s.item} ${selectedId === img.id ? s.selected : ''}`}
             style={{
               left: `${img.rect.x * 100}%`,
@@ -416,7 +540,7 @@ export function LayoutStage({
             {selectedId === img.id && (
               <div
                 className={s.handle}
-                onPointerDown={(e) => onPointerDown(e, img.id, 'resize')}
+                onPointerDown={(e) => onPointerDown(e, img.id, 'resize', 'se')}
               />
             )}
           </div>
@@ -428,7 +552,8 @@ export function LayoutStage({
           ref would never exist for the feed to start. */}
       {camera.enabled && camera.deviceId && (
         <div
-          className={`${s.item} ${selectedId === 'camera' ? s.selected : ''}`}
+          data-overlay-id="camera"
+          className={s.item}
           style={{
             left: `${camera.rect.x * 100}%`,
             top: `${camera.rect.y * 100}%`,
@@ -448,9 +573,31 @@ export function LayoutStage({
             playsInline
             style={{ transform: camera.mirrored ? 'scaleX(-1)' : undefined }}
           />
-          {selectedId === 'camera' && (
-            <div className={s.handle} onPointerDown={(e) => onPointerDown(e, 'camera', 'resize')} />
-          )}
+        </div>
+      )}
+
+      {/* Selection chrome, drawn OUTSIDE the clipped media box so the anchors
+          survive every shape — a circle used to swallow them entirely. Always
+          a rectangle, so the drag bounds stay legible around a round bubble. */}
+      {camera.enabled && camera.deviceId && hasCameraFeed && selectedId === 'camera' && (
+        <div
+          ref={camFrameRef}
+          data-overlay-box="camera"
+          className={s.frame}
+          style={{
+            left: `${camera.rect.x * 100}%`,
+            top: `${camera.rect.y * 100}%`,
+            width: `${camera.rect.w * 100}%`,
+            height: `${camera.rect.h * 100}%`,
+          }}
+        >
+          {CORNERS.map((c) => (
+            <div
+              key={c.id}
+              className={`${s.anchor} ${s[c.cls]}`}
+              onPointerDown={(e) => onPointerDown(e, 'camera', 'resize', c.id)}
+            />
+          ))}
         </div>
       )}
 
@@ -460,11 +607,14 @@ export function LayoutStage({
       {camera.enabled && camera.deviceId && hasCameraFeed && selectedId === 'camera' && !dragging && (
         <div
           className={s.shapeBar}
+          // Cleared by 16px rather than 6px: the corner anchors overhang the
+          // box by 9px, so the old offset put the bar on top of them and the
+          // top two were unclickable.
           style={{
             left: `${camera.rect.x * 100}%`,
-            ...(camera.rect.y < 0.12
-              ? { top: `calc(${(camera.rect.y + camera.rect.h) * 100}% + 6px)` }
-              : { top: `calc(${camera.rect.y * 100}% - 34px)` }),
+            ...(camera.rect.y < 0.14
+              ? { top: `calc(${(camera.rect.y + camera.rect.h) * 100}% + 16px)` }
+              : { top: `calc(${camera.rect.y * 100}% - 46px)` }),
           }}
           onPointerDown={(e) => e.stopPropagation()}
         >
@@ -486,6 +636,17 @@ export function LayoutStage({
               appearance={camera.mirrored ? 'primary' : 'subtle'}
               icon={<FlipHorizontalRegular />}
               onClick={() => onCameraMirror(!camera.mirrored)}
+            />
+          </Tooltip>
+          {/* Shadow belongs with the other camera looks, not buried in
+              settings — it is a property of the bubble you are looking at. */}
+          <Tooltip content="Drop shadow" relationship="label" withArrow>
+            <Button
+              className={s.shapeBtn}
+              size="small"
+              appearance={camera.shadow ? 'primary' : 'subtle'}
+              icon={<SquareShadowRegular />}
+              onClick={() => onCameraShadow(!camera.shadow)}
             />
           </Tooltip>
         </div>
