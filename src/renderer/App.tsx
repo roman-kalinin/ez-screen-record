@@ -15,6 +15,7 @@ import {
   Toast,
   ToastTitle,
   ToastBody,
+  ToastTrigger,
   useId,
   Link,
   Divider,
@@ -105,6 +106,16 @@ const useStyles = makeStyles({
     position: 'relative',
     zIndex: 1,
     borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
+  // Toolbar mode: the window is only as tall as this row, so the border reads
+  // as a stray line, and the controls need room to breathe rather than being
+  // squeezed against the edges.
+  controlBarToolbar: {
+    borderTop: 'none',
+    justifyContent: 'center',
+    gap: '10px',
+    padding: '0 16px',
+    height: '100%',
   },
   roundBtn: {
     width: '40px',
@@ -351,7 +362,22 @@ export function App() {
     (title: string, body?: string, intent: 'success' | 'error' | 'warning' = 'success') => {
       dispatchToast(
         <Toast>
-          <ToastTitle>{title}</ToastTitle>
+          {/* Every toast is dismissable. Relying on the timeout alone left
+              toasts stuck on screen over the controls. */}
+          <ToastTitle
+            action={
+              <ToastTrigger>
+                <Button
+                  appearance="subtle"
+                  size="small"
+                  icon={<DismissRegular />}
+                  aria-label="Dismiss"
+                />
+              </ToastTrigger>
+            }
+          >
+            {title}
+          </ToastTitle>
           {body && <ToastBody>{body}</ToastBody>}
         </Toast>,
         { intent, timeout: intent === 'error' ? 8000 : 4000 },
@@ -462,7 +488,20 @@ export function App() {
           const p = res.filePath;
           dispatchToast(
             <Toast>
-              <ToastTitle>Recording saved</ToastTitle>
+              <ToastTitle
+                action={
+                  <ToastTrigger>
+                    <Button
+                      appearance="subtle"
+                      size="small"
+                      icon={<DismissRegular />}
+                      aria-label="Dismiss"
+                    />
+                  </ToastTrigger>
+                }
+              >
+                Recording saved
+              </ToastTitle>
               <ToastBody>
                 <Link onClick={() => window.ez.revealFile(p)}>Show in folder</Link>
               </ToastBody>
@@ -514,30 +553,23 @@ export function App() {
 
       const cam = settingsRef.current.camera;
 
-      // Mode A — the camera stays with the renderer and is shown in a real
-      // window on the recorded display, which ffmpeg captures as ordinary
-      // screen pixels. ffmpeg never opens the webcam, so the preview keeps the
-      // device and stays live and editable for the whole take.
-      // Mode A is the default whenever there is a camera, and `showOnScreen`
-      // only exists to opt OUT of it.
+      // There is exactly one way the camera is recorded: it renders in an
+      // always-on-top window on the desktop, and the screen capture picks it up
+      // as ordinary pixels. Nothing composites it.
       //
-      // The reason is structural, not cosmetic. ffmpeg's libplacebo blend is a
-      // framesync filter: it emits one output frame per synchronised set of
-      // inputs, so the slowest input paces the entire graph. A webcam is
-      // typically 30fps and drops to ~15 in dim light, which dragged 60fps
-      // takes down to ~21 genuinely-unique frames per second and 120fps takes
-      // to ~13. Measured every escape route — moving `fps=` before or after the
-      // overlay, forcing an explicit camera mode, framesync options — and the
-      // gate survives all of them, because it is what the filter is designed to
-      // do. There is no ffmpeg-composites-the-camera path that holds frame rate.
+      // This is not a mode, it is the only thing that works. ffmpeg's libplacebo
+      // blend is a framesync filter — it emits one output frame per synchronised
+      // set of inputs, so the slowest input paces the whole graph. A webcam is
+      // typically 30fps and drops to ~15 in dim light, which dragged 60fps takes
+      // down to ~21 genuinely-unique frames per second and 120fps takes to ~13.
+      // Every escape route was measured and none worked, because gating is what
+      // the filter is designed to do.
       //
-      // Mode A takes the camera out of ffmpeg's graph entirely: it renders in
-      // an always-on-top window and Windows composites it, so ffmpeg captures a
-      // plain screen and the webcam's rate never touches the recording clock.
-      // Measured at 60fps with the camera visible: 21 -> 58 unique fps. It is
-      // also the only mode that leaves the preview live, so both hard rules are
-      // satisfied by the same decision.
-      const onScreenCamera = Boolean(camName) && cam.showOnScreen !== false;
+      // Keeping the bubble on the desktop also means the webcam's rate never
+      // touches the recording clock, the preview never has to give up the
+      // camera, and the bubble can be dragged mid-take with what you see being
+      // exactly what lands in the file.
+      const onScreenCamera = Boolean(camName);
       onScreenCameraRef.current = onScreenCamera;
 
       if (onScreenCamera) {
@@ -545,13 +577,6 @@ export function App() {
         const src = sourcesRef.current.find((x) => x.id === cfg.screenSourceId);
         await window.ez.cameraOverlay.show(src?.displayId);
         await window.ez.cameraOverlay.send('cameraOverlay:config', cam);
-      } else if (camName) {
-        // Mode B — ffmpeg opens the webcam itself. Release the preview's hold
-        // on it FIRST: DirectShow is exclusive, so without this the app blocks
-        // its own recording. The delay gives the OS time to actually free the
-        // device — stopping a track is not synchronous down at the driver level.
-        setCaptureSuspended(true);
-        await new Promise((r) => setTimeout(r, 700));
       }
 
       const res = await window.ez.native.start({
@@ -559,31 +584,23 @@ export function App() {
         height: cfg.resolution === 'source' ? undefined : Number(cfg.resolution),
         quality: cfg.quality,
         micDeviceName: micName,
-        // In Mode A the bubble is already on screen, so ffmpeg must NOT
-        // composite a second copy of the camera.
-        camera:
-          camName && !onScreenCamera
-            ? {
-                deviceName: camName,
-                rect: cam.rect,
-                // libplacebo takes 0..0.5, where 0.5 is a full circle.
-                cornerRounding:
-                  cam.shape === 'circle' ? 0.5 : cam.shape === 'rounded' ? 0.15 : 0,
-                mirrored: cam.mirrored,
-              }
-            : null,
+        // Always null: the bubble is already on the desktop and the screen
+        // capture records it. Handing the camera to ffmpeg as well would both
+        // duplicate it and re-introduce the framesync gate.
+        camera: null,
         outputDir: cfg.outputDir,
       });
 
       if (!res.ok) {
-        // Give the preview its devices back so the app is usable again.
-        setCaptureSuspended(false);
         void window.ez.cameraOverlay.hide();
         notify('Could not start recording', res.error, 'error');
         setState('idle');
         return;
       }
       nativeStartRef.current = Date.now();
+      // Collapse to the floating toolbar, Zoom-style: the preview would only be
+      // showing the desktop that is already on screen.
+      void window.ez.window.setToolbarMode(true);
       setState('recording');
       return;
     }
@@ -659,7 +676,20 @@ export function App() {
         const p = res.filePath;
         dispatchToast(
           <Toast>
-            <ToastTitle>Recording saved</ToastTitle>
+            <ToastTitle
+              action={
+                <ToastTrigger>
+                  <Button
+                    appearance="subtle"
+                    size="small"
+                    icon={<DismissRegular />}
+                    aria-label="Dismiss"
+                  />
+                </ToastTrigger>
+              }
+            >
+              Recording saved
+            </ToastTitle>
             <ToastBody>
               <Link onClick={() => window.ez.revealFile(p)}>Show in folder</Link>
             </ToastBody>
@@ -669,13 +699,13 @@ export function App() {
       } else {
         notify('Could not save recording', res.error, 'error');
       }
-      // ffmpeg has exited; the preview can reclaim the devices and the
-      // on-screen bubble comes down.
+      // ffmpeg has exited; take the bubble down and put the window back.
       setCaptureSuspended(false);
       if (onScreenCameraRef.current) {
         onScreenCameraRef.current = false;
         void window.ez.cameraOverlay.hide();
       }
+      void window.ez.window.setToolbarMode(false);
       setState('idle');
       setElapsed(0);
       return;
@@ -724,6 +754,13 @@ export function App() {
 
   // The overlay can exit draw mode itself (Esc or its ✕ button).
   useEffect(() => window.ez.on('control:drawModeChanged', (v: boolean) => setDrawing(v)), []);
+
+  // Keep main's copy of the capture-visibility flag in step, including when it
+  // is toggled mid-take.
+  useEffect(() => {
+    if (!loaded) return;
+    void window.ez.window.setHideFromCapture(settings.recording.hideToolbarFromCapture);
+  }, [settings.recording.hideToolbarFromCapture, loaded]);
 
   // The on-screen bubble is draggable in place; mirror its geometry back so the
   // app preview and the desktop bubble never disagree.
@@ -865,10 +902,17 @@ export function App() {
 
   return (
     <div className={s.root}>
-      <Toaster toasterId={toasterId} position="bottom-end" />
+      {/* Top-end: bottom-end sat directly over the record/stop button, and a
+          toast that outstayed its timeout blocked the primary action. */}
+      <Toaster toasterId={toasterId} position="top-end" offset={{ vertical: 40 }} />
 
-      {/* Title bar ------------------------------------------------------- */}
-      <div className={`${s.titlebar} titlebar`}>
+      {/* Title bar. Also hidden in toolbar mode — the bar is only 64px tall
+          and the controls themselves are what matter there; the whole strip
+          stays draggable via the control bar's own drag region. -------- */}
+      <div
+        className={`${s.titlebar} titlebar`}
+        style={busy && state !== 'countdown' ? { display: 'none' } : undefined}
+      >
         <div className={s.titleText}>
           {state === 'recording' && <div className="rec-dot" />}
           <Text size={200} weight="semibold">
@@ -905,8 +949,10 @@ export function App() {
         </div>
       </div>
 
-      {/* Stage ------------------------------------------------------------ */}
-      <div className={s.body}>
+      {/* Stage. Hidden during a take: the window is a compact toolbar then,
+          and the preview would only be mirroring the desktop that is already
+          on screen — at the cost of a second capture of it. ------------- */}
+      <div className={s.body} style={busy && state !== 'countdown' ? { display: 'none' } : undefined}>
         <input
           ref={fileInputRef}
           type="file"
@@ -963,7 +1009,11 @@ export function App() {
 
       {/* Control bar. Google Meet layout: pill split-buttons for devices,
           round icon buttons for actions, primary action far right. -------- */}
-      <div className={s.controlBar}>
+      <div
+        className={`${s.controlBar} ${
+          busy && state !== 'countdown' ? `${s.controlBarToolbar} toolbar-drag` : ''
+        }`}
+      >
         <PillControl
           label="Microphone"
           onIcon={<MicRegular />}
@@ -1160,17 +1210,27 @@ export function App() {
                 }
               />
 
+              <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
+                While recording, the camera appears on your desktop where you can drag and
+                resize it, and lands in the video exactly as you see it.
+              </Text>
+
+              <Divider />
+
               <Switch
-                checked={settings.camera.showOnScreen}
-                label="Show camera on screen while recording"
+                checked={settings.recording.hideToolbarFromCapture}
+                label="Hide the toolbar from the recording"
                 onChange={(_e, d) =>
-                  setSettings((p) => ({ ...p, camera: { ...p.camera, showOnScreen: d.checked } }))
+                  setSettings((p) => ({
+                    ...p,
+                    recording: { ...p.recording, hideToolbarFromCapture: d.checked },
+                  }))
                 }
               />
               <Text size={100} style={{ color: tokens.colorNeutralForeground3, marginTop: '-4px' }}>
-                {settings.camera.showOnScreen
-                  ? 'Recommended. The camera bubble sits on your desktop and can be dragged in place, the preview stays live and editable, and the recording keeps its full frame rate.'
-                  : 'The camera bubble stays hidden from your desktop, but the recorder composites it — the preview pauses and the frame rate drops to your webcam’s (often 30fps, or lower in dim light).'}
+                {settings.recording.hideToolbarFromCapture
+                  ? 'The toolbar stays visible to you but never appears in the video. It is also hidden from Zoom and Teams shares while recording.'
+                  : 'The toolbar is recorded along with everything else on screen.'}
               </Text>
 
               <Divider />
@@ -1242,7 +1302,9 @@ export function App() {
           </MenuPopover>
         </Menu>
 
-        <div className={s.spacer} />
+        {/* In toolbar mode the row is centred, so a growing spacer would just
+            shove the transport off to the right. */}
+        {!(busy && state !== 'countdown') && <div className={s.spacer} />}
 
         {/* Elapsed time only once there is something to time. */}
         {busy && state !== 'countdown' && <Text className={s.timer}>{formatTime(elapsed)}</Text>}

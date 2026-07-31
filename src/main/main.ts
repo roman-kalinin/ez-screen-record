@@ -303,6 +303,77 @@ function createCameraOverlayWindow(display: Electron.Display): BrowserWindow {
   return cameraOverlayWindow;
 }
 
+/**
+ * Collapse the control window into a compact floating toolbar for the duration
+ * of a take, the way Zoom's screen-share bar behaves, and restore it after.
+ *
+ * The preview pane is worse than useless while recording: it shows the desktop
+ * that is already on screen, and it costs a second capture of the same display.
+ * The toolbar keeps the controls that are actually wanted mid-take — source,
+ * mic, camera, drawing, stop — in a bar small enough to leave sitting over the
+ * work. It stays content-protected, so it never appears in the recording.
+ */
+let preToolbarBounds: Electron.Rectangle | null = null;
+
+function enterToolbarMode() {
+  if (!controlWindow || controlWindow.isDestroyed()) return;
+  if (preToolbarBounds) return;  // already collapsed
+
+  preToolbarBounds = controlWindow.getBounds();
+
+  // Wide enough for the whole control row. The mic and camera pills are ~76px
+  // each, then five 40px round buttons, the timer, pause and stop, plus gaps —
+  // sizing this too tightly clipped the pills off the left edge entirely.
+  const width = 760;
+  const height = 68;
+  const workArea = screen.getPrimaryDisplay().workArea;
+  controlWindow.setMinimumSize(width, height);
+  controlWindow.setBounds({
+    width,
+    height,
+    x: Math.round(workArea.x + (workArea.width - width) / 2),
+    // Near the top, like Zoom's share bar, clear of the taskbar.
+    y: workArea.y + 12,
+  });
+  controlWindow.setAlwaysOnTop(true, 'screen-saver');
+  controlWindow.setResizable(false);
+  // Keep the toolbar out of the recording. The window stays fully visible to
+  // the user; it is only the capture that cannot see it.
+  if (!process.env.EZ_NO_CONTENT_PROTECTION) {
+    controlWindow.setContentProtection(hideToolbarFromCapture);
+  }
+}
+
+/**
+ * Whether the toolbar is hidden from screen capture during a take.
+ *
+ * On by default: the recorder's own chrome has no business appearing in a
+ * tutorial. The cost is that content protection applies to EVERY capture, so
+ * the toolbar also vanishes from Zoom/Teams shares while recording — which is
+ * why this is exposed as a setting rather than hardcoded.
+ */
+let hideToolbarFromCapture = true;
+
+function exitToolbarMode() {
+  if (!controlWindow || controlWindow.isDestroyed()) return;
+  if (!preToolbarBounds) return;
+
+  controlWindow.setResizable(true);
+  controlWindow.setMinimumSize(560, 420);
+  controlWindow.setBounds(preToolbarBounds);
+  // Back to the standing rule: the panel is always hidden from capture when
+  // not recording, so the live preview never mirrors itself.
+  if (!process.env.EZ_NO_CONTENT_PROTECTION) {
+    controlWindow.setContentProtection(true);
+  }
+  // Only drop always-on-top if the user had not pinned it themselves.
+  if (!userPinnedOnTop) controlWindow.setAlwaysOnTop(false);
+  preToolbarBounds = null;
+}
+
+/** Whether the user pinned the window, so toolbar mode does not un-pin it. */
+let userPinnedOnTop = false;
+
 // ---------------------------------------------------------------------------
 // IPC
 // ---------------------------------------------------------------------------
@@ -449,8 +520,26 @@ function registerIpc() {
     return true;
   });
   ipcMain.handle('win:setAlwaysOnTop', (_e, flag: boolean) => {
+    userPinnedOnTop = flag;
     controlWindow?.setAlwaysOnTop(flag);
     return flag;
+  });
+
+  /** Collapse to / restore from the recording toolbar. */
+  ipcMain.handle('win:setToolbarMode', (_e, on: boolean) => {
+    if (on) enterToolbarMode();
+    else exitToolbarMode();
+    return on;
+  });
+
+  /** Whether the toolbar is invisible to screen capture during a take. */
+  ipcMain.handle('win:setHideFromCapture', (_e, hide: boolean) => {
+    hideToolbarFromCapture = hide;
+    if (preToolbarBounds && controlWindow && !process.env.EZ_NO_CONTENT_PROTECTION) {
+      // Applies immediately when toggled mid-take.
+      controlWindow.setContentProtection(hide);
+    }
+    return hide;
   });
 
   // --- Saving --------------------------------------------------------------

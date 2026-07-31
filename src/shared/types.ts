@@ -107,6 +107,15 @@ export interface RecordingSettings {
   quality: QualityPreset;
   /** Where finished recordings are written. */
   outputDir: string | null;
+  /**
+   * Keep the recording toolbar out of the video.
+   *
+   * On by default — the recorder's own chrome has no place in a tutorial. The
+   * catch is that Windows applies content protection to EVERY capture, so the
+   * toolbar also disappears from Zoom/Teams shares while recording, which is
+   * why this is a setting rather than always-on.
+   */
+  hideToolbarFromCapture: boolean;
 }
 
 export const QUALITY_PRESETS: Array<{ value: QualityPreset; label: string }> = [
@@ -181,6 +190,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     engine: 'overlay',
     quality: 'high',
     outputDir: null,
+    hideToolbarFromCapture: true,
   },
   camera: {
     enabled: true,

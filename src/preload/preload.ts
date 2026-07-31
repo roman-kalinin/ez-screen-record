@@ -36,6 +36,11 @@ const api = {
     minimize: () => ipcRenderer.invoke('win:minimize'),
     close: (isRecording = false) => ipcRenderer.invoke('win:close', isRecording),
     setAlwaysOnTop: (flag: boolean) => ipcRenderer.invoke('win:setAlwaysOnTop', flag),
+    /** Collapse the window into the compact recording toolbar, or restore it. */
+    setToolbarMode: (on: boolean) => ipcRenderer.invoke('win:setToolbarMode', on),
+    /** Hide the recording toolbar from screen capture. */
+    setHideFromCapture: (hide: boolean) =>
+      ipcRenderer.invoke('win:setHideFromCapture', hide),
     /** Exclude the control panel from screen capture while recording. */
     setCaptureHidden: (hidden: boolean) => ipcRenderer.invoke('win:setCaptureHidden', hidden),
   },
