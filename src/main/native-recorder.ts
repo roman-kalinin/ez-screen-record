@@ -212,7 +212,25 @@ export class NativeRecorder {
 
     const micIdx = opts.micDeviceName ? idx++ : -1;
     if (opts.micDeviceName) {
-      args.push('-f', 'dshow', '-rtbufsize', '256M', '-i', `audio=${opts.micDeviceName}`);
+      args.push(
+        '-f', 'dshow',
+        // 50ms audio chunks. This single option is worth more than it looks:
+        // dshow's default buffer is large enough that each refill blocked the
+        // capture path and stalled VIDEO in a regular rhythm — recordings had a
+        // ~300ms freeze roughly every half second, for their whole length.
+        //
+        // Measured at 1440p120, same machine, same moment, mic the only
+        // difference:
+        //   no mic                       70fps,  10 drops,  2 stalls
+        //   mic, default buffer          38fps, 194 drops, 27 stalls
+        //   mic, audio_buffer_size 50    81fps,  14 drops,  2 stalls
+        //
+        // `-thread_queue_size` barely helped (27 -> 23), because the queue was
+        // never the constraint; the buffer refill was.
+        '-audio_buffer_size', '50',
+        '-rtbufsize', '256M',
+        '-i', `audio=${opts.micDeviceName}`,
+      );
     }
 
     // --- Filter graph ------------------------------------------------------

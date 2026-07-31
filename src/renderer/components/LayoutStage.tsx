@@ -126,15 +126,6 @@ interface Props {
    * blocks its own recording. Set while a native take is running.
    */
   suspendCapture?: boolean;
-  /**
-   * A take is under way and ffmpeg is capturing the same display.
-   *
-   * The preview stays live and fully editable — but it drops to a much cheaper
-   * capture. Every CPU cycle and every WGC frame this window takes is one the
-   * recorder does not get, and that contention is what reduced 120fps takes to
-   * ~20-30 genuinely-unique frames per second.
-   */
-  recording?: boolean;
 }
 
 /** Smallest an overlay may be shrunk to, as a fraction of the frame. */
@@ -157,7 +148,6 @@ export function LayoutStage({
   onCameraShape,
   onCameraMirror,
   suspendCapture = false,
-  recording = false,
 }: Props) {
   const s = useStyles();
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -196,14 +186,11 @@ export function LayoutStage({
             mandatory: {
               chromeMediaSource: 'desktop',
               chromeMediaSourceId: screenSourceId,
-              // A low preview framerate keeps the UI cheap while idle — and
-              // cheaper still during a take. Every frame this capture pulls is
-              // one ffmpeg does not get: the preview and the recorder are
-              // contending for the same Desktop Duplication source and the same
-              // CPU. At 5fps/640px the preview stays live and editable while
-              // costing the recorder almost nothing.
-              maxFrameRate: recording ? 5 : 15,
-              maxWidth: recording ? 640 : 1280,
+              // A low preview framerate keeps the UI cheap while idle. During
+              // a take this component is unmounted outright (see App.tsx), so
+              // there is no throttled mode to reason about.
+              maxFrameRate: 15,
+              maxWidth: 1280,
             },
           },
         } as unknown as MediaStreamConstraints);
@@ -225,7 +212,7 @@ export function LayoutStage({
       cancelled = true;
       stream?.getTracks().forEach((t) => t.stop());
     };
-  }, [screenSourceId, suspendCapture, recording]);
+  }, [screenSourceId, suspendCapture]);
 
   // --- Live camera preview ---------------------------------------------------
   useEffect(() => {

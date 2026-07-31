@@ -134,8 +134,7 @@ const useStyles = makeStyles({
   },
 });
 
-function formatTime(ms: number): string {
-  const total = Math.floor(ms / 1000);
+function formatTime(total: number): string {
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
@@ -147,7 +146,6 @@ function formatTime(ms: number): string {
 /** Everything the toolbar needs, pushed from the control window. */
 interface ToolbarState {
   state: RecordingState;
-  elapsed: number;
   drawing: boolean;
   micEnabled: boolean;
   micDeviceId: string | null;
@@ -161,6 +159,7 @@ interface ToolbarState {
 function Toolbar() {
   const s = useStyles();
   const [st, setSt] = useState<ToolbarState | null>(null);
+  const [seconds, setSeconds] = useState(0);
   const barRef = useRef<HTMLDivElement>(null);
   /** Bar position within the full-screen window. null = default (top centre). */
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
@@ -193,7 +192,13 @@ function Toolbar() {
     setDragging(false);
   };
 
+  // State and clock arrive separately so the once-a-second tick does not carry
+  // the device lists with it — see the note in App.tsx.
   useEffect(() => window.ez.on('toolbar:state', (next: ToolbarState) => setSt(next)), []);
+  useEffect(
+    () => window.ez.on('toolbar:elapsed', (seconds: number) => setSeconds(seconds)),
+    [],
+  );
 
   /**
    * Grant input while the pointer is over the bar OR any popup it opened.
@@ -309,7 +314,7 @@ function Toolbar() {
 
         <div className={s.divider} />
 
-        <Text className={s.timer}>{formatTime(st.elapsed)}</Text>
+        <Text className={s.timer}>{formatTime(seconds)}</Text>
 
         <Tooltip
           content={paused ? 'Resume' : 'Pause'}

@@ -759,11 +759,17 @@ export function App() {
   const activeSourceName =
     sources.find((x) => x.id === settings.recording.screenSourceId)?.name ?? '';
 
+  // Deliberately split in two, and `elapsed` is NOT a dependency here.
+  //
+  // The elapsed timer ticks 5x a second, and sending the whole state object —
+  // including both full device lists — on every tick meant an IPC round trip
+  // and a re-render of the toolbar window 5x a second, for the entire take.
+  // That showed up in recordings as a ~300ms stall every ~0.5s, right through.
+  // This effect now fires only when something a human changed actually changes.
   useEffect(() => {
     if (state !== 'recording' && state !== 'paused') return;
     void window.ez.toolbar.send('toolbar:state', {
       state,
-      elapsed,
       drawing,
       micEnabled: settings.recording.micEnabled,
       micDeviceId: settings.recording.micDeviceId,
@@ -775,7 +781,6 @@ export function App() {
     });
   }, [
     state,
-    elapsed,
     drawing,
     settings.recording.micEnabled,
     settings.recording.micDeviceId,
@@ -785,6 +790,13 @@ export function App() {
     cams,
     activeSourceName,
   ]);
+
+  // The clock goes over on its own, as a bare number, once a second — the
+  // toolbar only renders whole seconds, so 5x a second bought nothing.
+  useEffect(() => {
+    if (state !== 'recording' && state !== 'paused') return;
+    void window.ez.toolbar.send('toolbar:elapsed', Math.floor(elapsed / 1000));
+  }, [Math.floor(elapsed / 1000), state]);
 
   // The on-screen bubble is draggable in place; mirror its geometry back so the
   // app preview and the desktop bubble never disagree.
@@ -1028,6 +1040,13 @@ export function App() {
           }}
         />
 
+        {/* Unmounted during a take. The window is hidden behind the toolbar
+            then, so the preview cannot be seen anyway, and leaving it mounted
+            means a second capture of the very display ffmpeg is recording.
+            (It was NOT the cause of the periodic stalls — that was dshow's
+            audio buffer, see native-recorder.ts — but it is still pure waste
+            while invisible.) */}
+        {!(state === 'recording' || state === 'paused') && (
         <LayoutStage
           screenSourceId={settings.recording.screenSourceId}
           camera={settings.camera}
@@ -1041,8 +1060,8 @@ export function App() {
             setSettings((p) => ({ ...p, camera: { ...p.camera, mirrored } }))
           }
           suspendCapture={captureSuspended}
-          recording={state === 'recording' || state === 'paused'}
         />
+        )}
 
         {settings.images.length > 0 && (
           <div className={s.imageList}>
