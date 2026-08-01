@@ -40,6 +40,7 @@ public sealed partial class MainWindow : Window
         AppWindow.Resize(new Windows.Graphics.SizeInt32(980, 760));
 
         PopulateOptions();
+        BuildStage();
         _ = RestoreSourceAsync();
 
         Closed += (_, _) => Settings.Save();
@@ -89,6 +90,56 @@ public sealed partial class MainWindow : Window
         _loaded = true;
     }
 
+    // --- Layout stage -------------------------------------------------------
+
+    private LayoutStageControl? _stage;
+
+    private static readonly (OverlayShape Value, string Label)[] ShapeOptions =
+    [
+        (OverlayShape.Rounded, "Rounded"),
+        (OverlayShape.Circle, "Circle"),
+        (OverlayShape.Square, "Square"),
+    ];
+
+    private void BuildStage()
+    {
+        _stage = new LayoutStageControl();
+        _stage.SetCamera(Settings.Camera);
+        _stage.CameraRectChanged += rect =>
+        {
+            Settings.Camera.Rect = rect;
+            Settings.Save();
+        };
+        StageHost.Content = _stage;
+
+        CameraToggle.IsChecked = Settings.Camera.Enabled;
+        MirrorToggle.IsChecked = Settings.Camera.Mirrored;
+
+        foreach (var (_, label) in ShapeOptions) ShapeBox.Items.Add(label);
+        ShapeBox.SelectedIndex = Array.FindIndex(ShapeOptions, o => o.Value == Settings.Camera.Shape);
+    }
+
+    private void OnToggleCamera(object sender, RoutedEventArgs e)
+    {
+        Settings.Camera.Enabled = CameraToggle.IsChecked == true;
+        _stage?.SetCamera(Settings.Camera);
+        Settings.Save();
+    }
+
+    private void OnToggleMirror(object sender, RoutedEventArgs e)
+    {
+        Settings.Camera.Mirrored = MirrorToggle.IsChecked == true;
+        Settings.Save();
+    }
+
+    private void OnShapeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_loaded || ShapeBox.SelectedIndex < 0) return;
+        Settings.Camera.Shape = ShapeOptions[ShapeBox.SelectedIndex].Value;
+        _stage?.SetCamera(Settings.Camera);
+        Settings.Save();
+    }
+
     // --- Source -------------------------------------------------------------
 
     private async Task RestoreSourceAsync()
@@ -126,6 +177,12 @@ public sealed partial class MainWindow : Window
         Settings.Recording.ScreenSourceId = choice.Id;
         SourceLabel.Text = choice.Label;
         SourceThumb.Source = await choice.LoadThumbnailAsync(96);
+
+        // A still of the source behind the overlays, so the layout is arranged
+        // against what will actually be recorded rather than a black rectangle.
+        // Larger than the row thumbnail because the stage is much bigger.
+        _stage?.SetBackground(await choice.LoadThumbnailAsync(640));
+
         Settings.Save();
     }
 
@@ -227,6 +284,40 @@ public sealed partial class MainWindow : Window
         var dir = Settings.Recording.OutputDir ?? AppSettings.DefaultOutputDir;
         var name = $"Recording {DateTime.Now:yyyy-MM-dd HH-mm-ss}.mp4";
 
+        // Only composite the camera when it is enabled, a device is chosen, and
+        // the user has NOT asked for the on-screen bubble.
+        //
+        // ShowOnScreen is the default and matters for frame rate, not looks:
+        // ffmpeg's libplacebo blend is framesync'd, so compositing here paces
+        // the whole graph off the webcam. A 30fps camera (15fps in dim light)
+        // pulled 60fps takes down to ~21 unique fps and 120fps takes to ~13.
+        // The bubble instead rides along as an ordinary desktop window that the
+        // screen capture picks up, and the screen is never held back.
+        var camera = Settings.Camera is { Enabled: true, ShowOnScreen: false, DeviceName: not null }
+            ? new CameraCompositeOptions
+            {
+                DeviceName = Settings.Camera.DeviceName,
+                Rect = Settings.Camera.Rect,
+                CornerRounding = Settings.Camera.Shape switch
+                {
+                    OverlayShape.Circle => 0.5,
+                    OverlayShape.Rounded => 0.15,
+                    _ => 0.0,
+                },
+                Mirrored = Settings.Camera.Mirrored,
+            }
+            : null;
+
+        var images = Settings.Images
+            .Where(i => i.Visible && File.Exists(i.FilePath))
+            .Select(i => new ImageCompositeOptions
+            {
+                FilePath = i.FilePath,
+                Rect = i.Rect,
+                Opacity = i.Opacity,
+            })
+            .ToList();
+
         var options = new RecordOptions
         {
             OutputPath = Path.Combine(dir, name),
@@ -235,6 +326,8 @@ public sealed partial class MainWindow : Window
             Height = Settings.ResolutionHeight,
             Quality = Settings.Recording.Quality,
             MicDeviceName = Settings.Recording.MicEnabled ? Settings.Recording.MicDeviceName : null,
+            Camera = camera,
+            Images = images,
         };
 
         RecordButton.IsEnabled = false;

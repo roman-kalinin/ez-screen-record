@@ -157,7 +157,19 @@ if [ ! -f "$PREFIX/lib/pkgconfig/ffnvcodec.pc" ]; then
   make -C "$ROOT/nv-codec-headers" PREFIX="$PREFIX" install >/dev/null
 fi
 
-# --- 5. x264 (software encode fallback; see the licensing note at the top) ---
+# --- 5. AMF headers (AMD hardware encode) -----------------------------------
+# Header-only, like nv-codec-headers: no AMD binary is redistributed, the
+# runtime DLL comes from the driver. Without these, --enable-amf fails with
+# "amf requested but not found".
+if [ ! -d "$PREFIX/include/AMF" ]; then
+  echo "==> AMF headers"
+  rm -rf "$ROOT/amf"
+  git clone --depth 1 -b v1.4.35 https://github.com/GPUOpen-LibrariesAndSDKs/AMF "$ROOT/amf"
+  mkdir -p "$PREFIX/include/AMF"
+  cp -r "$ROOT/amf/amf/public/include/"* "$PREFIX/include/AMF/"
+fi
+
+# --- 6. x264 (software encode fallback; see the licensing note at the top) ---
 if [ ! -f "$PREFIX/lib/pkgconfig/x264.pc" ]; then
   echo "==> x264"
   rm -rf "$ROOT/x264"
@@ -173,7 +185,7 @@ if [ ! -f "$PREFIX/lib/pkgconfig/x264.pc" ]; then
     && make -j"$JOBS" >/dev/null && make install >/dev/null )
 fi
 
-# --- 6. ffmpeg --------------------------------------------------------------
+# --- 7. ffmpeg --------------------------------------------------------------
 echo "==> ffmpeg"
 if [ ! -d "$ROOT/ffmpeg" ]; then
   git clone --depth 1 -b n7.1 https://github.com/FFmpeg/FFmpeg "$ROOT/ffmpeg"
