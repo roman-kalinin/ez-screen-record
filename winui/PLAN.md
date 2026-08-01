@@ -30,19 +30,24 @@ HDR gamma correction, the WGC/NVENC C++ — all survive. The UI does not.
 
 ## Correction to the size premise
 
-The 148 MB installer is **not** Electron:
+The 148 MB installer was **not** Electron's runtime. Two things dominated it,
+and both are now fixed — in the Electron app, with no WinUI rewrite involved:
 
-| Component | Size |
-| --- | ---: |
-| `ffmpeg.exe` (BtbN full GPL build) | 138.5 MB |
-| Electron + Chromium + app, NSIS-compressed | ~9 MB |
-| **Installer total** | **147.9 MB** |
+| Component | Before | After |
+| --- | ---: | ---: |
+| `ffmpeg.exe` (BtbN full GPL build → slim build) | 138.5 MB | 19.9 MB |
+| `app.asar` (production `node_modules` shipped by default) | 189.0 MB | 1.0 MB |
+| **Installer total** | **147.9 MB** | **83.5 MB** |
 
-A WinUI build that still bundles this ffmpeg lands near 140 MB — a ~5% win for
-a full rewrite. **Shrinking ffmpeg is the actual size lever and is independent
-of the UI framework.** It is queued as follow-up work after this plan; see
-"Follow-up" below. Do not justify the WinUI port on size — justify it on
-native look and feel.
+An earlier draft of this document claimed Electron compressed to ~9 MB. That
+was arithmetic on the installer/ffmpeg difference rather than a measurement,
+and the asar bloat hid behind it.
+
+What remains is genuinely Chromium, and it is the one part a WinUI build would
+avoid: a self-contained WinUI app with the same bundled ffmpeg should land
+around 40-60 MB. That is a real difference, but it arrives only at the end of
+a full rewrite. **Do not justify the port on size — justify it on native look
+and feel.**
 
 ## Layout
 
@@ -141,11 +146,34 @@ remaining phases.
 4. **NVENC-only** — the native path needs an NVIDIA GPU. The ffmpeg fallback
    must stay, so both paths need maintaining regardless.
 
-## Follow-up (queued, not part of this plan)
+## Status
 
-Shrink `ffmpeg.exe` from 138.5 MB. Build LGPL with `--disable-everything` plus
-only what the recorder actually uses — `ddagrab`, `libplacebo`, `h264_nvenc`,
-`dshow`, `aac`, `mp4` — targeting roughly 15–25 MB. This takes the current
-Electron installer from 148 MB to about 30 MB, benefits the WinUI build
-equally, and removes the GPL encumbrance that `resources/ffmpeg/README.md`
-flags as blocking an MIT release.
+All five phases are implemented and building. See `winui/README.md` for how to
+build and run, and the git history for what each phase entailed.
+
+The riskiest call in this plan turned out to be wrong in a good way: **Phase 4
+was not the blocker.** WinUI 3 handles the transparent click-through overlay,
+and `--overlay-selftest` verifies all 13 window-style and hotkey properties,
+including that display affinity survives the interactivity toggle that silently
+dropped it in Electron.
+
+Still outstanding, and each is honest in the UI rather than silently absent:
+
+- **Window capture** — ddagrab captures whole outputs, so a window source
+  records the display it sits on.
+- **Pause** — ffmpeg has no pause; it needs process suspension plus timestamp
+  stitching.
+- **System audio** — the mic path works; loopback capture is not wired up.
+- **The `native/` session API** — still unbuilt, and still needed by both front
+  ends. See the gap noted under Phase 2.
+
+## Follow-up
+
+The ffmpeg slimming that was queued here is **done** (138.5 MB → 19.9 MB), as
+is a much larger asar fix; both landed in the Electron app and are reflected in
+the table above.
+
+It stayed GPL rather than becoming LGPL. Dropping x264 would have left
+Intel-graphics machines with no encoder at all, and `libmfx` (QSV) needs an SDK
+outside this toolchain. `tools/build-ffmpeg-slim.sh` documents how to revisit
+that if the MIT release matters more than recording on those machines.
