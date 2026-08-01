@@ -66,7 +66,7 @@ public sealed partial class SourceDialog : ContentDialog
 
     private async Task LoadAsync()
     {
-        Loading.IsActive = true;
+        LoadingRing.IsActive = true;
         SourceGrid.Visibility = Visibility.Collapsed;
         _cards.Clear();
         Selected = null;
@@ -79,7 +79,7 @@ public sealed partial class SourceDialog : ContentDialog
         foreach (var choice in choices)
             _cards.Add(new SourceCard { Choice = choice });
 
-        Loading.IsActive = false;
+        LoadingRing.IsActive = false;
         SourceGrid.Visibility = Visibility.Visible;
 
         // Fill thumbnails in the background so the grid is interactive at once.
@@ -123,3 +123,4 @@ public sealed partial class SourceDialog : ContentDialog
         deferral.Complete();
     }
 }
+

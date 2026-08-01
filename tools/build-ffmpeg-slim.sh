@@ -125,7 +125,10 @@ fi
 if [ ! -f "$PREFIX/lib/pkgconfig/libplacebo.pc" ]; then
   echo "==> libplacebo"
   rm -rf "$ROOT/libplacebo"
-  git clone --depth 1 -b v7.349.0 --recursive https://code.videolan.org/videolan/libplacebo.git "$ROOT/libplacebo"
+  # Must be new enough for the ffmpeg tag below. v7.349 against ffmpeg n8.0
+  # fails to compile vf_libplacebo.c: its libav_internal.h still calls
+  # av_stream_get_side_data(), which n8.0 removed.
+  git clone --depth 1 -b v7.351.0 --recursive https://code.videolan.org/videolan/libplacebo.git "$ROOT/libplacebo"
   meson setup "$ROOT/libplacebo/build" "$ROOT/libplacebo" \
     --cross-file "$ROOT/mingw.cross" \
     --prefix="$PREFIX" \
@@ -164,10 +167,11 @@ fi
 if [ ! -d "$PREFIX/include/AMF" ]; then
   echo "==> AMF headers"
   rm -rf "$ROOT/amf"
-  # Keep roughly in step with the ffmpeg tag below: ffmpeg checks for a minimum
-  # AMF version, so an older header set fails configure with the unhelpful
-  # "amf requested but not found".
-  git clone --depth 1 -b v1.4.36 https://github.com/GPUOpen-LibrariesAndSDKs/AMF "$ROOT/amf"
+  # Must keep step with the ffmpeg ref below: ffmpeg enforces a MINIMUM AMF
+  # version, so an older header set fails configure with the unhelpful
+  # "amf requested but not found" -- which reads as though AMF were not
+  # requested properly rather than merely being too old.
+  git clone --depth 1 -b v1.5.2 https://github.com/GPUOpen-LibrariesAndSDKs/AMF "$ROOT/amf"
   mkdir -p "$PREFIX/include/AMF"
   cp -r "$ROOT/amf/amf/public/include/"* "$PREFIX/include/AMF/"
 fi
@@ -190,13 +194,22 @@ fi
 
 # --- 7. ffmpeg --------------------------------------------------------------
 echo "==> ffmpeg"
-# n8.0, not n7.1. The recorder's filter graph uses libplacebo's `fit_mode`
-# option, which does not exist in 7.1 -- a take with a camera or image overlay
-# dies at start with "Error applying option 'fit_mode' to filter 'libplacebo':
-# Option not found", while screen-only takes work fine. Pinned rather than
-# tracking master so a future upstream change cannot silently break the graph.
+# master, not a release tag.
+#
+# The recorder's compositing graph uses vf_libplacebo's `fit_mode` option, which
+# is an FFMPEG-side option (not a libplacebo one) and has not made it into a
+# release yet -- it is absent from both n7.1 and n8.0. Without it, camera and
+# image overlays die at start with "Error applying option 'fit_mode' to filter
+# 'libplacebo': Option not found" while screen-only takes work fine, so the gap
+# is easy to miss.
+#
+# The stock BtbN build the app previously shipped was also a master build, so
+# this matches what the graph was written and measured against. Tracking master
+# does mean an upstream change can break the build; FFMPEG_REF pins it if that
+# happens.
+FFMPEG_REF="${FFMPEG_REF:-master}"
 if [ ! -d "$ROOT/ffmpeg" ]; then
-  git clone --depth 1 -b n8.0 https://github.com/FFmpeg/FFmpeg "$ROOT/ffmpeg"
+  git clone --depth 1 -b "$FFMPEG_REF" https://github.com/FFmpeg/FFmpeg "$ROOT/ffmpeg"
 fi
 cd "$ROOT/ffmpeg"
 make distclean >/dev/null 2>&1 || true

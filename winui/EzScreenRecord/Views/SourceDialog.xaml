@@ -36,7 +36,7 @@
             </Button>
         </Grid>
 
-        <ProgressRing x:Name="Loading"
+        <ProgressRing x:Name="LoadingRing"
                       Grid.Row="1"
                       IsActive="True"
                       HorizontalAlignment="Center"
@@ -86,3 +86,4 @@
         </GridView>
     </Grid>
 </ContentDialog>
+

@@ -170,20 +170,25 @@ internal static partial class Win32
 
     // --- Helpers ------------------------------------------------------------
 
+    // Style bits are masked through uint before widening, deliberately. A style
+    // constant with the high bit set (WS_POPUP is 0x80000000) is a NEGATIVE int,
+    // and sign-extending it to long would set every one of the upper 32 bits --
+    // silently corrupting the whole style word rather than setting one flag.
+
     /// <summary>Add ex-style bits without disturbing the rest.</summary>
     internal static void AddExStyle(IntPtr hWnd, int bits)
     {
         var cur = (long)GetWindowLongPtr(hWnd, GWL_EXSTYLE);
-        SetWindowLongPtr(hWnd, GWL_EXSTYLE, new IntPtr(cur | bits));
+        SetWindowLongPtr(hWnd, GWL_EXSTYLE, new IntPtr(cur | (uint)bits));
     }
 
     /// <summary>Remove ex-style bits without disturbing the rest.</summary>
     internal static void RemoveExStyle(IntPtr hWnd, int bits)
     {
         var cur = (long)GetWindowLongPtr(hWnd, GWL_EXSTYLE);
-        SetWindowLongPtr(hWnd, GWL_EXSTYLE, new IntPtr(cur & ~(long)bits));
+        SetWindowLongPtr(hWnd, GWL_EXSTYLE, new IntPtr(cur & ~(long)(uint)bits));
     }
 
     internal static bool HasExStyle(IntPtr hWnd, int bits)
-        => ((long)GetWindowLongPtr(hWnd, GWL_EXSTYLE) & bits) != 0;
+        => ((long)GetWindowLongPtr(hWnd, GWL_EXSTYLE) & (uint)bits) != 0;
 }

@@ -48,7 +48,8 @@
     "files": [
       "dist-main/**/*",
       "dist/**/*",
-      "build/icon.*"
+      "build/icon.*",
+      "!node_modules/**/*"
     ],
     "extraResources": [
       {

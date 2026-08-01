@@ -3,6 +3,23 @@
 Drop the ffmpeg binary here before running `npm run dist` / `npm run dist:mac`
 and it ships inside the installer, so users do not need ffmpeg on their PATH.
 
+## Build your own slim one (Windows)
+
+A stock full build is ~138 MB and is by far the largest thing in the installer.
+`tools/build-ffmpeg-slim.sh` cross-compiles one containing only what this app
+actually calls — **~19 MB, with identical output quality** (verified: 1440p60
+comes out High 4:4:4 Predictive / yuv444p either way).
+
+```sh
+# In WSL or any Linux with mingw-w64:
+bash tools/build-ffmpeg-slim.sh
+cp ~/ffbuild/out/ffmpeg.exe resources/ffmpeg/
+```
+
+Read that script's header before changing the enable list: several of the
+entries look redundant but are load-bearing, and omitting them fails at record
+time with errors that point somewhere else entirely.
+
 - Windows: `ffmpeg.exe`
 - macOS: `ffmpeg` (must keep its executable bit)
 

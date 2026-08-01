@@ -172,6 +172,12 @@ public sealed class AppSettings
     }
 
     /// <summary>Output height in pixels, or 0 to keep the capture's native size.</summary>
+    /// <remarks>
+    /// Derived from <see cref="RecordingSettings.Resolution"/>, so it must not
+    /// be persisted: a stale copy in settings.json would silently win over the
+    /// preset the user actually picked.
+    /// </remarks>
+    [JsonIgnore]
     public int ResolutionHeight => Recording.Resolution switch
     {
         ResolutionPreset.P2160 => 2160,

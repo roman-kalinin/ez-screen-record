@@ -91,6 +91,16 @@ the camera mid-take.
 - A missing or busy webcam degrades gracefully — the take continues without it
   rather than failing.
 
+## The WinUI version
+
+`winui/` holds a second, Windows-native front end built on WinUI 3. It shares
+this app's recording pipeline — the ffmpeg filter graph is ported verbatim, and
+the generated command lines are byte-equivalent — but draws its UI with real
+Windows 11 chrome (Mica, native title bar, system accent) rather than a web view.
+
+It is a companion, not a replacement: this Electron app remains the
+cross-platform one and is unchanged. See `winui/README.md`.
+
 ## Layout
 
 ```
