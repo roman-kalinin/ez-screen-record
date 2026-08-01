@@ -15,10 +15,15 @@ namespace EzScreenRecord.Views;
 /// <summary>
 /// The floating recording bar, in the Zoom/Meet share-bar idiom.
 ///
-/// The WINDOW spans the whole display and is transparent and click-through;
-/// only the pill inside it takes input. That matters: shrinking the window to
-/// the size of the bar means every dropdown and tooltip opens inside it and is
-/// clipped, because a window cannot draw outside its own bounds.
+/// The window is sized to the BAR, not to the display. Electron spans the whole
+/// screen with a transparent click-through window so dropdowns can escape the
+/// bar's bounds; WinUI windows are opaque and cannot do that (see
+/// Interop/LayeredOverlay.cs for the measurements), so a full-screen host is a
+/// full-screen black sheet over the desktop. That is precisely what made the
+/// screen go black the moment a recording started.
+///
+/// Nothing important is lost: WinUI renders flyouts in their own top-level
+/// popup windows, so the short device menus this bar opens are not clipped.
 ///
 /// The bar is always dark regardless of the system theme — it sits over the
 /// user's own content, and a light strip there is glaring.
@@ -32,8 +37,6 @@ public sealed class ToolbarWindow : Window
     private readonly Button _drawButton;
 
     private bool _dragging;
-    private Point _dragStart;
-    private Point _barStart;
 
     public event Action? StopRequested;
     public event Action? PauseRequested;
@@ -53,8 +56,7 @@ public sealed class ToolbarWindow : Window
             Padding = new Thickness(6, 8, 10, 8),
         };
 
-        // Drag grip. The bar moves WITHIN the full-screen window, so this
-        // repositions the bar rather than the window.
+        // Drag grip. The window is the bar, so this moves the window.
         var grip = new Border
         {
             Width = 18,
@@ -146,6 +148,17 @@ public sealed class ToolbarWindow : Window
             RequestedTheme = ElementTheme.Dark,
         };
 
+        // The window is SIZED TO THE BAR, not to the display.
+        //
+        // Electron makes this a full-screen transparent click-through window so
+        // dropdowns can escape the bar's bounds. WinUI cannot: its windows are
+        // opaque (see Interop/LayeredOverlay.cs for the measurements), so a
+        // full-screen host is a full-screen BLACK SHEET over the desktop --
+        // which is exactly what "black screen while recording" was.
+        //
+        // Sizing to the bar gives up nothing important here: the flyouts this
+        // bar opens are short device menus, and WinUI renders them in their own
+        // top-level popup windows rather than clipped inside the parent.
         _root = new Canvas();
         _root.Children.Add(_bar);
         Content = _root;
@@ -161,7 +174,6 @@ public sealed class ToolbarWindow : Window
 
         AppWindow.IsShownInSwitchers = false;
 
-        CoverDisplay();
         ApplyBaseStyles();
 
         _bar.SizeChanged += (_, _) => PositionBar();
@@ -188,19 +200,31 @@ public sealed class ToolbarWindow : Window
         return button;
     }
 
-    private void CoverDisplay()
-    {
-        var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary);
-        var b = area.OuterBounds;
-        AppWindow.MoveAndResize(new RectInt32(b.X, b.Y, b.Width, b.Height));
-    }
-
-    /// <summary>Top-centre by default, like Zoom's share bar.</summary>
+    /// <summary>
+    /// Size the window to the bar and park it top-centre, like Zoom's share bar.
+    ///
+    /// Called once the bar has measured itself; until then its ActualWidth is
+    /// zero and the window would collapse.
+    /// </summary>
     private void PositionBar()
     {
         if (_bar.ActualWidth <= 0) return;
-        Canvas.SetLeft(_bar, (_root.ActualWidth - _bar.ActualWidth) / 2);
-        Canvas.SetTop(_bar, 14);
+
+        var scale = _root.XamlRoot?.RasterizationScale ?? 1.0;
+        var width = (int)Math.Ceiling(_bar.ActualWidth * scale);
+        var height = (int)Math.Ceiling(_bar.ActualHeight * scale);
+
+        var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary);
+        var work = area.WorkArea;
+
+        AppWindow.MoveAndResize(new RectInt32(
+            work.X + (work.Width - width) / 2,
+            work.Y + 14,
+            width,
+            height));
+
+        Canvas.SetLeft(_bar, 0);
+        Canvas.SetTop(_bar, 0);
     }
 
     private void ApplyBaseStyles()
@@ -239,28 +263,44 @@ public sealed class ToolbarWindow : Window
 
     // --- Dragging the bar within the window ---------------------------------
 
+    // The window IS the bar now, so dragging moves the window. Screen
+    // coordinates, because window-relative ones shift as the window moves.
+
+    private POINT _dragOrigin;
+    private PointInt32 _windowStart;
+
     private void OnGripPressed(object sender, PointerRoutedEventArgs e)
     {
         _dragging = true;
-        _dragStart = e.GetCurrentPoint(_root).Position;
-        _barStart = new Point(Canvas.GetLeft(_bar), Canvas.GetTop(_bar));
+        GetCursorPos(out _dragOrigin);
+        _windowStart = AppWindow.Position;
         ((UIElement)sender).CapturePointer(e.Pointer);
     }
 
     private void OnGripMoved(object sender, PointerRoutedEventArgs e)
     {
         if (!_dragging) return;
-        var p = e.GetCurrentPoint(_root).Position;
+        GetCursorPos(out var cursor);
 
         // Clamp fully on-screen: this bar is the only way to stop a take.
-        var x = Math.Min(Math.Max(_barStart.X + (p.X - _dragStart.X), 0),
-            Math.Max(0, _root.ActualWidth - _bar.ActualWidth));
-        var y = Math.Min(Math.Max(_barStart.Y + (p.Y - _dragStart.Y), 0),
-            Math.Max(0, _root.ActualHeight - _bar.ActualHeight));
+        var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary);
+        var work = area.WorkArea;
+        var size = AppWindow.Size;
 
-        Canvas.SetLeft(_bar, x);
-        Canvas.SetTop(_bar, y);
+        var x = Math.Clamp(_windowStart.X + (cursor.X - _dragOrigin.X),
+            work.X, work.X + Math.Max(0, work.Width - size.Width));
+        var y = Math.Clamp(_windowStart.Y + (cursor.Y - _dragOrigin.Y),
+            work.Y, work.Y + Math.Max(0, work.Height - size.Height));
+
+        AppWindow.Move(new PointInt32(x, y));
     }
+
+    [System.Runtime.InteropServices.StructLayout(
+        System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct POINT { public int X; public int Y; }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out POINT point);
 
     private void OnGripReleased(object sender, PointerRoutedEventArgs e)
     {

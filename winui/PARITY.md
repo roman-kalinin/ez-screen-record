@@ -120,11 +120,24 @@ Verified by driving the real UI, not by reading code:
 | # | Feature | Note |
 | --- | --- | --- |
 | A12 | Drag/resize handles for image overlays in the stage | The list and compositing work; only the on-stage placement UI is missing. |
-| F1 | Device de-duplication | Windows lists one webcam several times (Default -, Communications -, trailing hardware id). |
 | F3 | Mid-take device and source switching | Electron can swap mic, camera and source without interrupting a take. |
 | — | Pause | ffmpeg has no pause; it needs process suspension plus timestamp stitching. Reported in the UI rather than silently absent. |
 | — | Window capture | ddagrab captures whole outputs, so a window source records the display it sits on. The UI says so. |
 | — | System audio | The mic path works; loopback capture is not wired up. |
+
+## Bugs found by using the app, not by reading it
+
+Worth recording, because none would have been caught by a build or a unit test:
+
+- **ffmpeg outlived the app.** A leaked encoder ran 302 minutes and wrote 9.8 GB
+  after the app that started it was killed. Fixed with a kill-on-close job
+  object; an exit handler would not have covered it.
+- **The overlay was completely opaque** while passing 13 window-style checks.
+- **A ComboBox wrote 120fps into settings on every launch**, because it fired
+  SelectionChanged while being populated.
+- **Every capture source was listed twice**, from two racing loads.
+- **The webcam preview never rendered**, though MediaCapture opened the device
+  without error.
 
 ## Rule
 

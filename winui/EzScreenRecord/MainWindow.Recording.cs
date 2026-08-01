@@ -286,6 +286,15 @@ public sealed partial class MainWindow
                 .ToList(),
         };
 
+        // Any drawing overlay from before the take must go.
+        //
+        // It covers the whole desktop and, while interactive, is filled with an
+        // alpha-1 base layer so it can be hit-tested -- which reads as a dark
+        // sheet over everything. Leaving it up meant pressing record produced a
+        // dark screen with only the toolbar on it. Drawing is re-armed with F8
+        // once the take is running.
+        CloseOverlay();
+
         // Show the toolbar BEFORE ffmpeg starts: otherwise the first frames of
         // the recording contain the toolbar animating in at 00:00.
         ShowToolbar();
