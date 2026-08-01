@@ -172,10 +172,16 @@ public sealed class CameraBubbleWindow : Window
     // --- Dragging -----------------------------------------------------------
     // The window has no title bar to drag, so the whole surface moves it.
 
+    // Screen coordinates, not window-relative ones. GetCurrentPoint(null) is
+    // measured against the window being dragged, so each frame moves the
+    // reference for the next and the bubble judders after the cursor.
+
+    private POINT _dragOrigin;
+
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
         _dragging = true;
-        _dragStart = e.GetCurrentPoint(null).Position;
+        GetCursorPos(out _dragOrigin);
         _windowStart = AppWindow.Position;
         _frame.CapturePointer(e.Pointer);
     }
@@ -183,11 +189,18 @@ public sealed class CameraBubbleWindow : Window
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
     {
         if (!_dragging) return;
-        var p = e.GetCurrentPoint(null).Position;
+        GetCursorPos(out var cursor);
         AppWindow.Move(new PointInt32(
-            _windowStart.X + (int)(p.X - _dragStart.X),
-            _windowStart.Y + (int)(p.Y - _dragStart.Y)));
+            _windowStart.X + (cursor.X - _dragOrigin.X),
+            _windowStart.Y + (cursor.Y - _dragOrigin.Y)));
     }
+
+    [System.Runtime.InteropServices.StructLayout(
+        System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct POINT { public int X; public int Y; }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out POINT point);
 
     private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
     {

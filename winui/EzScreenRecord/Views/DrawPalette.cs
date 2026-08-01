@@ -62,10 +62,14 @@ public sealed class DrawPalette : UserControl
             VerticalAlignment = VerticalAlignment.Center,
         };
 
-        // Drag handle
+        // Drag handle. Wider and full-height than the glyph needs: a 14px
+        // target makes the bar fiddly to reposition, and the extra width costs
+        // nothing on a bar this size.
         var grip = new Border
         {
-            Padding = new Thickness(6, 0, 6, 0),
+            Padding = new Thickness(8, 0, 8, 0),
+            MinWidth = 28,
+            VerticalAlignment = VerticalAlignment.Stretch,
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             Child = new FontIcon
             {
@@ -239,7 +243,8 @@ public sealed class DrawPalette : UserControl
     private void OnGripPressed(object sender, PointerRoutedEventArgs e)
     {
         _dragging = true;
-        _dragStart = e.GetCurrentPoint(null).Position;
+        GetCursorPos(out var cursor);
+        _dragStart = new Point(cursor.X, cursor.Y);
         _origin = Position;
         ((UIElement)sender).CapturePointer(e.Pointer);
         e.Handled = true;
@@ -248,13 +253,29 @@ public sealed class DrawPalette : UserControl
     private void OnGripMoved(object sender, PointerRoutedEventArgs e)
     {
         if (!_dragging) return;
-        var p = e.GetCurrentPoint(null).Position;
+
+        // Screen coordinates, deliberately.
+        //
+        // GetCurrentPoint(null) is relative to THIS window -- the very window
+        // the drag is moving -- so every frame shifts the reference the next
+        // frame is measured against. The palette then chases the cursor and
+        // judders. Screen coordinates do not move under the drag, so the delta
+        // stays honest and the bar tracks the pointer exactly.
+        GetCursorPos(out var cursor);
         Position = new Point(
-            _origin.X + (p.X - _dragStart.X),
-            _origin.Y + (p.Y - _dragStart.Y));
+            _origin.X + (cursor.X - _dragStart.X),
+            _origin.Y + (cursor.Y - _dragStart.Y));
+
         Moved?.Invoke(Position);
         e.Handled = true;
     }
+
+    [System.Runtime.InteropServices.StructLayout(
+        System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct POINT { public int X; public int Y; }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out POINT point);
 
     private void OnGripReleased(object sender, PointerRoutedEventArgs e)
     {

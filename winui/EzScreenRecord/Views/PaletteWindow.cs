@@ -59,8 +59,33 @@ public sealed class PaletteWindow : Window
             Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE);
     }
 
+    private Windows.Foundation.Point _pendingMove;
+    private bool _movePending;
+
+    /// <summary>
+    /// Move once per composition frame, not once per pointer event.
+    ///
+    /// Pointer input arrives faster than the display refreshes -- often several
+    /// times per frame -- and AppWindow.Move repositions the window
+    /// synchronously. Calling it per event queues more work than the compositor
+    /// can present, so the window visibly lags behind the cursor. Coalescing to
+    /// the frame keeps the drag in step with what is on screen.
+    /// </summary>
     private void MoveTo(Windows.Foundation.Point p)
-        => AppWindow.Move(new PointInt32((int)p.X, (int)p.Y));
+    {
+        _pendingMove = p;
+        if (_movePending) return;
+
+        _movePending = true;
+        Microsoft.UI.Xaml.Media.CompositionTarget.Rendering += OnRendering;
+    }
+
+    private void OnRendering(object? sender, object e)
+    {
+        Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= OnRendering;
+        _movePending = false;
+        AppWindow.Move(new PointInt32((int)_pendingMove.X, (int)_pendingMove.Y));
+    }
 
     /// <summary>
     /// Raise above the drawing overlay. Both windows are topmost and the

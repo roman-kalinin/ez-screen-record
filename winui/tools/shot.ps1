@@ -20,6 +20,14 @@
 .PARAMETER Out
     Output PNG path.
 
+.NOTES
+    CAVEAT: windows with WDA_EXCLUDEFROMCAPTURE are invisible to EVERY capture
+    on the machine, including this one. The app applies that to its toolbar and
+    palette when "hide the toolbar from the recording" is on, so those windows
+    are genuinely on screen while being absent from any screenshot taken here.
+    A missing palette in a capture is NOT evidence that it failed to render --
+    check with GetWindowRect/IsWindowVisible, or turn the setting off first.
+
 .EXAMPLE
     .\shot.ps1 -Title "Ez Screen Record" -Out shot.png
     .\shot.ps1 -Out desktop.png
