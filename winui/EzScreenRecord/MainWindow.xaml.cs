@@ -118,6 +118,7 @@ public sealed partial class MainWindow : Window
             Settings.Recording.MicEnabled = on;
             Settings.Save();
         };
+        _micPill.DevicesRequested += RefreshDevices;
         _micPill.DeviceSelected += name =>
         {
             Settings.Recording.MicDeviceName = name;
@@ -136,6 +137,7 @@ public sealed partial class MainWindow : Window
             _stage?.SetCamera(Settings.Camera);
             Settings.Save();
         };
+        _camPill.DevicesRequested += RefreshDevices;
         _camPill.DeviceSelected += name =>
         {
             Settings.Camera.DeviceName = name;
@@ -181,6 +183,20 @@ public sealed partial class MainWindow : Window
         AutomationProperties.SetName(_recordButton, "Record");
         _recordButton.Click += async (_, _) => await ToggleRecordAsync();
         Transport.Children.Add(_recordButton);
+    }
+
+    /// <summary>
+    /// Re-enumerate devices and refresh both pills.
+    ///
+    /// Called when a device menu is about to open rather than on a timer:
+    /// enumeration shells out to ffmpeg, so doing it on a schedule would spawn
+    /// a process every few seconds for a list nobody is looking at.
+    /// </summary>
+    private void RefreshDevices()
+    {
+        AudioDevices.Refresh();
+        _micPill?.SetDevices(AudioDevices.ListMicrophones(), Settings.Recording.MicDeviceName);
+        _camPill?.SetDevices(AudioDevices.ListCameras(), Settings.Camera.DeviceName);
     }
 
     private static Button RoundButton(string glyph, string tooltip, RoutedEventHandler onClick)

@@ -37,11 +37,20 @@ public sealed class PillControl : UserControl
     public event Action<bool>? Toggled;
     public event Action<string>? DeviceSelected;
 
+    /// <summary>Raised just before the device menu opens, so the list can be
+    /// refreshed for anything plugged in since launch.</summary>
+    public event Action? DevicesRequested;
+
     public PillControl(string label, string onGlyph, string offGlyph)
     {
         _label = label;
         _onGlyph = onGlyph;
         _offGlyph = offGlyph;
+
+        // Re-enumerate just before the menu opens, so a device plugged in since
+        // launch appears. Cheaper and more predictable than polling, since
+        // enumeration shells out to ffmpeg.
+        _menu.Opening += (_, _) => DevicesRequested?.Invoke();
 
         _chevron = new Button
         {

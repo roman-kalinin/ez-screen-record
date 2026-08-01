@@ -70,13 +70,19 @@ public static partial class AudioDevices
             // The trailing (audio)/(video) tag is what separates the two lists;
             // matching on the section header instead breaks when a device name
             // itself contains the word "audio".
+            // De-duplicate as we go. Windows enumerates one physical device
+            // several times -- through Media Foundation and DirectShow, plus
+            // "Default - " and "Communications - " aliases, and sometimes with
+            // a trailing hardware id. Listing all of them makes the picker
+            // noisy and the entries indistinguishable.
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             foreach (Match match in DeviceLine().Matches(stderr))
             {
-                if (match.Groups[2].Value == kind)
-                {
-                    var name = match.Groups[1].Value;
-                    if (!devices.Contains(name)) devices.Add(name);
-                }
+                if (match.Groups[2].Value != kind) continue;
+
+                var name = match.Groups[1].Value;
+                if (seen.Add(CanonicalName(name))) devices.Add(name);
             }
         }
         catch
@@ -90,4 +96,24 @@ public static partial class AudioDevices
 
     [GeneratedRegex("\"([^\"]+)\"\\s+\\((audio|video)\\)")]
     private static partial Regex DeviceLine();
+
+    /// <summary>
+    /// Reduce a device name to what identifies the physical device.
+    ///
+    /// Strips the "Default - " / "Communications - " role prefixes and a
+    /// trailing hardware id like " (046d:094c)", so the several names Windows
+    /// reports for one webcam or microphone collapse to a single entry.
+    /// </summary>
+    private static string CanonicalName(string name)
+    {
+        var cleaned = RolePrefix().Replace(name, "");
+        cleaned = HardwareId().Replace(cleaned, "");
+        return cleaned.Trim();
+    }
+
+    [GeneratedRegex(@"^(Default|Communications)\s*-\s*", RegexOptions.IgnoreCase)]
+    private static partial Regex RolePrefix();
+
+    [GeneratedRegex(@"\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex HardwareId();
 }

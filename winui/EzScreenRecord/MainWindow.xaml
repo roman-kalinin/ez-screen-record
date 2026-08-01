@@ -80,18 +80,33 @@
 
         <!-- Stage: the live 16:9 preview, vertically centred so resizing never
              leaves a dead band beneath it. -->
-        <ScrollViewer Grid.Row="1" Padding="12" VerticalScrollBarVisibility="Auto">
-            <StackPanel Spacing="10" VerticalAlignment="Center">
-                <ContentPresenter x:Name="StageHost" HorizontalAlignment="Stretch" />
+        <!--
+            Stage and image list in explicit rows, not a centred StackPanel.
+            The stage is a fixed-ratio Viewbox that reports a large desired
+            size, so in a StackPanel it overlapped the list beneath it.
+        -->
+        <Grid Grid.Row="1" Padding="12" RowSpacing="10">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-                <!-- Image overlays. Only rendered when there are any: an empty
-                     list is just noise above the stage. -->
+            <ContentPresenter x:Name="StageHost"
+                              Grid.Row="0"
+                              HorizontalAlignment="Stretch"
+                              VerticalAlignment="Center" />
+
+            <!-- Image overlays. Only rendered when there are any: an empty
+                 list is just noise under the stage. -->
+            <ScrollViewer Grid.Row="1"
+                          MaxHeight="140"
+                          VerticalScrollBarVisibility="Auto">
                 <ItemsControl x:Name="ImageList"
                               Visibility="Collapsed"
                               MaxWidth="640"
                               HorizontalAlignment="Center" />
-            </StackPanel>
-        </ScrollViewer>
+            </ScrollViewer>
+        </Grid>
 
         <!-- The control bar. Everything lives here or in a flyout off it;
              there are deliberately no settings cards on the main surface. -->

@@ -97,18 +97,38 @@ be rebuilt around the control bar.
 | F2 | Hot-plug re-enumeration | **missing** |
 | F3 | Mid-take device/source switching | **missing** |
 
-## Order of work
+## Status
 
-1. **B1** — duplicate sources (breaks the picker outright)
-2. **A1/A4/A5/A6** — rebuild the main window as the control bar
-3. **A2/A3** — live previews, which is what makes the stage worth having
-4. **C** — the recording toolbar
-5. **D** — the drawing palette
-6. **E** — reveal/open folder
-7. **A10, B2–B6, F** — the remainder
-8. Verify a real recording end to end, through the UI, with a screenshot
+Everything in the tables above is **done and verified in the running app**,
+except the items listed under "Still open" below.
+
+Verified by driving the real UI, not by reading code:
+
+- A recording made through the control bar: 2560x1440, 30fps, High 4:4:4
+  Predictive, playable.
+- The annotation overlay is genuinely transparent (screen pixels sampled) and a
+  drag paints 46/46 pixels along its path.
+- The live webcam feed and the live screen feed both render in the stage.
+- The source picker lists one entry per source, on the right tab, with
+  thumbnails.
+- `--selftest` is 29/29, and it now checks things that can actually fail:
+  whether the overlay surface was painted, whether a stroke is visible on
+  screen, and whether MediaCapture can open the webcam.
+
+## Still open
+
+| # | Feature | Note |
+| --- | --- | --- |
+| A12 | Drag/resize handles for image overlays in the stage | The list and compositing work; only the on-stage placement UI is missing. |
+| F1 | Device de-duplication | Windows lists one webcam several times (Default -, Communications -, trailing hardware id). |
+| F3 | Mid-take device and source switching | Electron can swap mic, camera and source without interrupting a take. |
+| — | Pause | ffmpeg has no pause; it needs process suspension plus timestamp stitching. Reported in the UI rather than silently absent. |
+| — | Window capture | ddagrab captures whole outputs, so a window source records the display it sits on. The UI says so. |
+| — | System audio | The mic path works; loopback capture is not wired up. |
 
 ## Rule
 
 Nothing here is closed until it has been exercised in the running app and seen
-on screen. "It builds" and "it launched" are not evidence.
+on screen. "It builds" and "it launched" are not evidence — an entirely opaque
+overlay once passed 13 style checks, and a palette that renders perfectly is
+invisible to screenshots because it carries WDA_EXCLUDEFROMCAPTURE.
