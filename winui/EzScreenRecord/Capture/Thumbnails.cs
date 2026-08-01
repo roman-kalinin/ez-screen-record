@@ -39,7 +39,16 @@ public static class Thumbnails
         var pixels = await Task.Run(() => CaptureWindowPixels(hWnd, maxWidth));
         if (pixels is null) return null;
 
-        return await ToBitmapImageAsync(pixels.Value.Data, pixels.Value.Width, pixels.Value.Height);
+        try
+        {
+            return await ToBitmapImageAsync(pixels.Value.Data, pixels.Value.Width, pixels.Value.Height);
+        }
+        catch
+        {
+            // Almost always "called off the UI thread". Nothing useful to do
+            // here beyond declining to show a thumbnail.
+            return null;
+        }
     }
 
     /// <summary>Grab an entire monitor by its desktop rectangle.</summary>
@@ -49,7 +58,14 @@ public static class Thumbnails
         var pixels = await Task.Run(() => CaptureScreenPixels(x, y, width, height, maxWidth));
         if (pixels is null) return null;
 
-        return await ToBitmapImageAsync(pixels.Value.Data, pixels.Value.Width, pixels.Value.Height);
+        try
+        {
+            return await ToBitmapImageAsync(pixels.Value.Data, pixels.Value.Width, pixels.Value.Height);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private readonly record struct Pixels(byte[] Data, int Width, int Height);
@@ -190,31 +206,46 @@ public static class Thumbnails
         return new Pixels(dst, dstW, dstH);
     }
 
-    private static async Task<BitmapImage?> ToBitmapImageAsync(byte[] bgra, int width, int height)
+    /// <summary>
+    /// Wrap raw BGRA in a XAML image source.
+    ///
+    /// BitmapImage is a XAML type and must be constructed on a thread with a
+    /// DispatcherQueue. Callers on a background thread get a
+    /// <see cref="SoftwareBitmapSource"/>-free path only via the raw overload
+    /// below; this one throws rather than returning null so a threading mistake
+    /// is visible instead of looking like "no thumbnail available".
+    /// </summary>
+    private static async Task<BitmapImage> ToBitmapImageAsync(byte[] bgra, int width, int height)
     {
-        try
-        {
-            var stream = new InMemoryRandomAccessStream();
-            var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, stream);
-            encoder.SetPixelData(
-                BitmapPixelFormat.Bgra8,
-                BitmapAlphaMode.Ignore,
-                (uint)width,
-                (uint)height,
-                96, 96,
-                bgra);
-            await encoder.FlushAsync();
-            stream.Seek(0);
+        var stream = new InMemoryRandomAccessStream();
+        var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, stream);
+        encoder.SetPixelData(
+            BitmapPixelFormat.Bgra8,
+            BitmapAlphaMode.Ignore,
+            (uint)width,
+            (uint)height,
+            96, 96,
+            bgra);
+        await encoder.FlushAsync();
+        stream.Seek(0);
 
-            var image = new BitmapImage();
-            await image.SetSourceAsync(stream);
-            return image;
-        }
-        catch
-        {
-            return null;
-        }
+        var image = new BitmapImage();
+        await image.SetSourceAsync(stream);
+        return image;
     }
+
+    /// <summary>
+    /// Capture a window's pixels without touching XAML.
+    ///
+    /// Exists so callers off the UI thread (the self-test, any future headless
+    /// use) can verify capture works without needing a DispatcherQueue.
+    /// </summary>
+    public static bool CanCaptureWindow(IntPtr hWnd, int maxWidth = 320)
+        => CaptureWindowPixels(hWnd, maxWidth) is not null;
+
+    /// <summary>Capture a screen region's pixels without touching XAML.</summary>
+    public static bool CanCaptureScreen(int x, int y, int width, int height, int maxWidth = 320)
+        => CaptureScreenPixels(x, y, width, height, maxWidth) is not null;
 
     // --- GDI interop --------------------------------------------------------
 

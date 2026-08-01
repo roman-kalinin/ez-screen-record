@@ -68,18 +68,48 @@ public sealed partial class SourceDialog : ContentDialog
     {
         LoadingRing.IsActive = true;
         SourceGrid.Visibility = Visibility.Collapsed;
+        EmptyMessage.Visibility = Visibility.Collapsed;
         _cards.Clear();
         Selected = null;
         IsPrimaryButtonEnabled = false;
 
-        var choices = await Task.Run(() => ShowingWindows
-            ? WindowList.Enumerate().Select(CaptureSourceChoice.FromWindow).ToList()
-            : MonitorList.Enumerate().Select(CaptureSourceChoice.FromMonitor).ToList());
+        // Read the tab state HERE, on the UI thread. Touching WindowsTab from
+        // inside Task.Run throws a wrong-thread exception which, because the
+        // callers are `async void`, is swallowed -- leaving the spinner turning
+        // forever with no error anywhere.
+        var wantWindows = ShowingWindows;
+
+        List<CaptureSourceChoice> choices;
+        try
+        {
+            choices = await Task.Run(() => wantWindows
+                ? WindowList.Enumerate().Select(CaptureSourceChoice.FromWindow).ToList()
+                : MonitorList.Enumerate().Select(CaptureSourceChoice.FromMonitor).ToList());
+        }
+        catch (Exception ex)
+        {
+            // Never leave the spinner running. An empty picker the user can
+            // close beats a dialog that appears hung.
+            LoadingRing.IsActive = false;
+            EmptyMessage.Text = $"Could not list sources: {ex.Message}";
+            EmptyMessage.Visibility = Visibility.Visible;
+            return;
+        }
 
         foreach (var choice in choices)
             _cards.Add(new SourceCard { Choice = choice });
 
         LoadingRing.IsActive = false;
+
+        if (_cards.Count == 0)
+        {
+            EmptyMessage.Text = wantWindows
+                ? "No capturable windows found."
+                : "No displays found.";
+            EmptyMessage.Visibility = Visibility.Visible;
+            return;
+        }
+
         SourceGrid.Visibility = Visibility.Visible;
 
         // Fill thumbnails in the background so the grid is interactive at once.

@@ -40,6 +40,11 @@ public sealed class CaptureSourceChoice
         Label = m.Label,
         Kind = CaptureKind.Screen,
         MonitorIndex = m.Index,
+        // Desktop coordinates, not just size: a secondary monitor starts at a
+        // non-zero origin, and without it every screen thumbnail would grab the
+        // primary display instead.
+        X = m.X,
+        Y = m.Y,
         Width = m.Width,
         Height = m.Height,
     };

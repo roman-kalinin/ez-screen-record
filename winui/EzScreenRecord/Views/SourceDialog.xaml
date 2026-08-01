@@ -10,7 +10,7 @@
     DefaultButton="Primary"
     IsPrimaryButtonEnabled="False">
 
-    <Grid Width="720" Height="480" RowSpacing="12">
+    <Grid Width="760" Height="520" RowSpacing="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -24,12 +24,14 @@
 
             <SelectorBar x:Name="KindSelector"
                          Grid.Column="0"
+                         VerticalAlignment="Center"
                          SelectionChanged="OnKindChanged">
                 <SelectorBarItem x:Name="ScreensTab" Text="Screens" IsSelected="True" />
                 <SelectorBarItem x:Name="WindowsTab" Text="Windows" />
             </SelectorBar>
 
             <Button Grid.Column="1"
+                    VerticalAlignment="Center"
                     Click="OnRefresh"
                     ToolTipService.ToolTip="Refresh">
                 <FontIcon Glyph="&#xE72C;" FontSize="14" />
@@ -41,6 +43,17 @@
                       IsActive="True"
                       HorizontalAlignment="Center"
                       VerticalAlignment="Center" />
+
+        <TextBlock x:Name="EmptyMessage"
+                   Grid.Row="1"
+                   Visibility="Collapsed"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   TextAlignment="Center"
+                   TextWrapping="Wrap"
+                   MaxWidth="420"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                   Style="{StaticResource BodyTextBlockStyle}" />
 
         <GridView x:Name="SourceGrid"
                   Grid.Row="1"

@@ -49,21 +49,39 @@ public sealed class HotkeyManager : IDisposable
 
     private void CreateMessageWindow()
     {
+        // Unique per instance. A window class name can only be registered once
+        // per module, so a fixed name makes RegisterClass fail for every
+        // manager after the first -- CreateWindowEx then returns NULL, every
+        // RegisterHotKey against that null handle fails, and the app reports
+        // "another app already owns these keys" when nothing of the sort is
+        // true.
+        var className = $"EzScreenRecordHotkeyWindow_{Guid.NewGuid():N}";
+
         var wc = new WNDCLASS
         {
             lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_wndProc),
             hInstance = GetModuleHandle(null),
-            lpszClassName = "EzScreenRecordHotkeyWindow",
+            lpszClassName = className,
         };
 
-        RegisterClass(ref wc);
+        if (RegisterClass(ref wc) == 0)
+        {
+            LastError = $"RegisterClass failed ({Marshal.GetLastWin32Error()})";
+            return;
+        }
 
         // HWND_MESSAGE: a message-only window. It is never visible, never
         // appears in the taskbar, and costs nothing to keep around.
         _hwnd = CreateWindowEx(
-            0, wc.lpszClassName, "", 0, 0, 0, 0, 0,
+            0, className, "", 0, 0, 0, 0, 0,
             new IntPtr(-3), IntPtr.Zero, wc.hInstance, IntPtr.Zero);
+
+        if (_hwnd == IntPtr.Zero)
+            LastError = $"CreateWindowEx failed ({Marshal.GetLastWin32Error()})";
     }
+
+    /// <summary>Why setup failed, if it did. Null on success.</summary>
+    public string? LastError { get; private set; }
 
     private void RegisterAll()
     {
@@ -78,6 +96,14 @@ public sealed class HotkeyManager : IDisposable
 
     private void Register(int id, HotkeyAction action, uint modifiers, uint vk, string label)
     {
+        // No message window means no hotkeys at all. Report the real reason
+        // rather than blaming a key conflict.
+        if (_hwnd == IntPtr.Zero)
+        {
+            Failed.Add(label);
+            return;
+        }
+
         if (Win32.RegisterHotKey(_hwnd, id, modifiers, vk))
         {
             _actions[id] = action;
@@ -135,10 +161,12 @@ public sealed class HotkeyManager : IDisposable
         [MarshalAs(UnmanagedType.LPWStr)] public string lpszClassName;
     }
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "RegisterClassW")]
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "RegisterClassW",
+        SetLastError = true)]
     private static extern ushort RegisterClass(ref WNDCLASS wndClass);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "CreateWindowExW")]
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "CreateWindowExW",
+        SetLastError = true)]
     private static extern IntPtr CreateWindowEx(
         int exStyle, string className, string windowName, int style,
         int x, int y, int width, int height,

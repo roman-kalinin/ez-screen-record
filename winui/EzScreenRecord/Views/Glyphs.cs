@@ -27,4 +27,7 @@ internal static class Glyphs
     public const string Camera = "\uE714";
     public const string Mirror = "\uE13C";
     public const string Minimized = "\uE738";
+
+    public const string Accept = "\uE73E";
+    public const string Cancel = "\uE711";
 }

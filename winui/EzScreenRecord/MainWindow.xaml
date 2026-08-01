@@ -41,7 +41,12 @@
 
         <!-- Main content -->
         <ScrollViewer Grid.Row="1" Padding="{StaticResource PagePadding}">
-            <StackPanel Spacing="{StaticResource GapL}" MaxWidth="900">
+            <!-- Centred, not left-aligned. A MaxWidth column pinned to the left
+                 of a full-width window leaves a large dead margin on one side,
+                 which is what made the layout look lopsided. -->
+            <StackPanel Spacing="{StaticResource GapL}"
+                        MaxWidth="900"
+                        HorizontalAlignment="Center">
 
                 <!-- Source selection -->
                 <Border Style="{StaticResource CardStyle}">
@@ -110,18 +115,19 @@
                             </StackPanel>
                         </Grid>
 
+                        <!-- Fixed 16:9 box. The drag coordinate space IS the
+                             output frame, so the stage must hold that aspect
+                             ratio exactly; a Viewbox around a fixed grid instead
+                             letterboxed itself and left dead bands inside the
+                             card. -->
                         <Border CornerRadius="6"
                                 BorderThickness="1"
                                 BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                Background="Black">
-                            <Viewbox StretchDirection="Both" Stretch="Uniform" MaxHeight="320">
-                                <!-- Fixed 16:9 canvas: the drag coordinate space
-                                     is the frame itself, so the stage must keep
-                                     the output's aspect ratio exactly. -->
-                                <Grid Width="640" Height="360">
-                                    <ContentPresenter x:Name="StageHost" />
-                                </Grid>
-                            </Viewbox>
+                                Background="Black"
+                                Width="640"
+                                Height="360"
+                                HorizontalAlignment="Center">
+                            <ContentPresenter x:Name="StageHost" />
                         </Border>
 
                         <TextBlock Text="Drag to move · corner handle to resize"
