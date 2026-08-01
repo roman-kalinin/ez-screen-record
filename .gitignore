@@ -13,3 +13,6 @@ release/
 # the README explaining which build to use is tracked, the binary is not.
 resources/ffmpeg/*
 !resources/ffmpeg/README.md
+
+# Claude Code agent worktrees (local scratch, not project content).
+.claude/worktrees/
