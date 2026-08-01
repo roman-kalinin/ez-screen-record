@@ -2,6 +2,7 @@ using EzScreenRecord.Interop;
 using EzScreenRecord.Models;
 using Microsoft.Graphics.Canvas.UI.Xaml;
 using Microsoft.UI;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Input;
@@ -36,6 +37,8 @@ public sealed class OverlayWindow : Window
 {
     private readonly AppSettings _settings;
     private readonly CanvasControl _canvas;
+    private readonly DrawPalette _palette;
+    private readonly Canvas _paletteHost;
 
     private readonly List<Stroke> _strokes = [];
     private Stroke? _current;
@@ -55,13 +58,34 @@ public sealed class OverlayWindow : Window
         _canvas.PointerMoved += OnPointerMoved;
         _canvas.PointerReleased += OnPointerReleased;
 
-        Content = _canvas;
+        // The palette floats over the canvas on a Canvas host so it can be
+        // dragged anywhere, defaulting to the top-left corner.
+        _palette = new DrawPalette(settings);
+        _palette.ClearRequested += ClearAll;
+        _palette.DoneRequested += Dismiss;
+        _palette.Moved += p =>
+        {
+            Canvas.SetLeft(_palette, p.X);
+            Canvas.SetTop(_palette, p.Y);
+        };
+
+        _paletteHost = new Canvas();
+        _paletteHost.Children.Add(_palette);
+        Canvas.SetLeft(_palette, 24);
+        Canvas.SetTop(_palette, 24);
+
+        var root = new Grid();
+        root.Children.Add(_canvas);
+        root.Children.Add(_paletteHost);
+
+        // Tool keys, matching the Electron overlay: P H A R O E, Ctrl+Z, Del, Esc.
+        root.KeyDown += OnKeyDown;
 
         // Transparent background all the way down. Any opaque brush in this
         // chain produces a black rectangle over the desktop instead of an
         // invisible overlay.
-        if (Content is FrameworkElement root)
-            root.RequestedTheme = ElementTheme.Dark;
+        root.RequestedTheme = ElementTheme.Dark;
+        Content = root;
 
         ExtendsContentIntoTitleBar = true;
 
@@ -251,7 +275,10 @@ public sealed class OverlayWindow : Window
     /// </summary>
     private void EraseAt(Point p)
     {
-        var radius = Math.Max(12, _settings.Draw.Width * 3);
+        // 18px, fixed, matching the Electron overlay. Scaling it with the pen
+        // width made the eraser unpredictable: a thick pen erased far more than
+        // the cursor suggested.
+        const double radius = 18;
         var removed = _strokes.RemoveAll(s => Annotation.HitTest(s, p, radius));
         if (removed > 0) _canvas.Invalidate();
     }
@@ -272,4 +299,47 @@ public sealed class OverlayWindow : Window
     }
 
     public void Dismiss() => Dismissed?.Invoke();
+
+    /// <summary>
+    /// Tool shortcuts, live while the overlay has focus. Mnemonic letters for
+    /// tools, Ctrl+Z to undo, Del to clear, Esc to finish.
+    /// </summary>
+    private void OnKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        var ctrl = Microsoft.UI.Input.InputKeyboardSource
+            .GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control)
+            .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+
+        switch (e.Key)
+        {
+            case Windows.System.VirtualKey.P: SetTool(DrawTool.Pen); break;
+            case Windows.System.VirtualKey.H: SetTool(DrawTool.Highlighter); break;
+            case Windows.System.VirtualKey.A: SetTool(DrawTool.Arrow); break;
+            case Windows.System.VirtualKey.R: SetTool(DrawTool.Rect); break;
+            case Windows.System.VirtualKey.O: SetTool(DrawTool.Ellipse); break;
+            case Windows.System.VirtualKey.E: SetTool(DrawTool.Eraser); break;
+
+            case Windows.System.VirtualKey.Z when ctrl: Undo(); break;
+
+            case Windows.System.VirtualKey.Delete:
+            case Windows.System.VirtualKey.Back:
+                ClearAll();
+                break;
+
+            case Windows.System.VirtualKey.Escape:
+                Dismiss();
+                break;
+
+            default:
+                return;
+        }
+
+        e.Handled = true;
+    }
+
+    private void SetTool(DrawTool tool)
+    {
+        _settings.Draw.Tool = tool;
+        _settings.Save();
+    }
 }

@@ -53,6 +53,11 @@ public static class WindowList
             Win32.DwmGetWindowAttribute(hWnd, Win32.DWMWA_CLOAKED, out var cloaked, sizeof(int));
             if (cloaked != 0) return true;
 
+            // Never offer our own windows. Recording the recorder produces a
+            // hall of mirrors, and the picker, toolbar and overlay would all
+            // show up as choices.
+            if (title.StartsWith("Ez Screen Record", StringComparison.Ordinal)) return true;
+
             results.Add(new ListedWindow(hWnd, title, Win32.IsIconic(hWnd)));
             return true;
         };

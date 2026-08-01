@@ -2,7 +2,9 @@ using EzScreenRecord.Capture;
 using EzScreenRecord.Interop;
 using EzScreenRecord.Models;
 using EzScreenRecord.Views;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Windows.Storage.Pickers;
@@ -10,11 +12,16 @@ using DispatcherTimer = Microsoft.UI.Xaml.DispatcherTimer;
 
 namespace EzScreenRecord;
 
+public enum RecordingState { Idle, Countdown, Recording, Paused, Saving }
+
 public sealed partial class MainWindow : Window
 {
     private AppSettings Settings => App.Settings;
     private CaptureSourceChoice? _source;
-    private bool _loaded;
+
+    private RecordingState _state = RecordingState.Idle;
+    private bool Busy => _state is RecordingState.Countdown or RecordingState.Recording
+        or RecordingState.Paused or RecordingState.Saving;
 
     public MainWindow()
     {
@@ -22,9 +29,6 @@ public sealed partial class MainWindow : Window
 
         Title = "Ez Screen Record";
 
-        // Mica. Unlike Electron, where the backdrop needed transparent:false
-        // plus a fully-transparent ARGB backgroundColor and broke on maximize,
-        // WinUI exposes it directly and it survives window state changes.
         if (Microsoft.UI.Composition.SystemBackdrops.MicaController.IsSupported())
         {
             SystemBackdrop = new MicaBackdrop
@@ -33,15 +37,18 @@ public sealed partial class MainWindow : Window
             };
         }
 
-        // Draw our own title bar into the caption area.
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
 
-        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(980, 760));
+        PinIcon.Glyph = Glyphs.Pin;
+        MinimizeIcon.Glyph = Glyphs.Minimize;
+        CloseIcon.Glyph = Glyphs.Close;
 
-        PopulateOptions();
+        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));
+        SizeToPreview();
+
         BuildStage();
+        BuildControlBar();
         SetupHotkeys();
         _ = RestoreSourceAsync();
 
@@ -49,64 +56,33 @@ public sealed partial class MainWindow : Window
         {
             _hotkeys?.Dispose();
             _overlay?.Close();
+            _toolbar?.Close();
+            _stage?.StopPreviews();
             Settings.Save();
         };
     }
 
-    // --- Options ------------------------------------------------------------
-
-    private static readonly int[] FpsOptions = [24, 30, 60, 120];
-
-    private static readonly (ResolutionPreset Value, string Label)[] ResolutionOptions =
-    [
-        (ResolutionPreset.Source, "Same as source"),
-        (ResolutionPreset.P2160, "4K · 2160p"),
-        (ResolutionPreset.P1440, "QHD · 1440p"),
-        (ResolutionPreset.P1080, "Full HD · 1080p"),
-        (ResolutionPreset.P720, "HD · 720p"),
-    ];
-
-    private static readonly (QualityPreset Value, string Label)[] QualityOptions =
-    [
-        (QualityPreset.High, "Best — visually lossless"),
-        (QualityPreset.Balanced, "Balanced"),
-        (QualityPreset.Compact, "Smallest file"),
-    ];
-
-    private void PopulateOptions()
+    /// <summary>
+    /// Size the window around a 16:9 preview rather than to a fixed box, so the
+    /// stage is never letterboxed and there is no dead band under it.
+    /// </summary>
+    private void SizeToPreview()
     {
-        foreach (var fps in FpsOptions) FpsBox.Items.Add($"{fps} fps");
-        FpsBox.SelectedIndex = Math.Max(0, Array.IndexOf(FpsOptions, Settings.Recording.Fps));
+        var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary);
+        var work = area.WorkArea;
 
-        foreach (var (_, label) in ResolutionOptions) ResolutionBox.Items.Add(label);
-        ResolutionBox.SelectedIndex = Array.FindIndex(
-            ResolutionOptions, o => o.Value == Settings.Recording.Resolution);
+        var width = Math.Min(880, work.Width - 80);
+        var height = (int)Math.Round(width * 0.5625) + 150;
 
-        foreach (var (_, label) in QualityOptions) QualityBox.Items.Add(label);
-        QualityBox.SelectedIndex = Array.FindIndex(
-            QualityOptions, o => o.Value == Settings.Recording.Quality);
-
-        MicBox.Items.Add("None");
-        foreach (var device in AudioDevices.ListMicrophones()) MicBox.Items.Add(device);
-        var savedMic = Settings.Recording.MicDeviceName;
-        var micIndex = savedMic is null ? 0 : MicBox.Items.IndexOf(savedMic);
-        MicBox.SelectedIndex = micIndex >= 0 ? micIndex : 0;
-
-        OutputDirLabel.Text = Settings.Recording.OutputDir ?? AppSettings.DefaultOutputDir;
-
-        _loaded = true;
+        AppWindow.Resize(new Windows.Graphics.SizeInt32(width, height));
+        AppWindow.Move(new Windows.Graphics.PointInt32(
+            work.X + (work.Width - width) / 2,
+            work.Y + (work.Height - height) / 2));
     }
 
-    // --- Layout stage -------------------------------------------------------
+    // --- Stage --------------------------------------------------------------
 
     private LayoutStageControl? _stage;
-
-    private static readonly (OverlayShape Value, string Label)[] ShapeOptions =
-    [
-        (OverlayShape.Rounded, "Rounded"),
-        (OverlayShape.Circle, "Circle"),
-        (OverlayShape.Square, "Square"),
-    ];
 
     private void BuildStage()
     {
@@ -117,395 +93,146 @@ public sealed partial class MainWindow : Window
             Settings.Camera.Rect = rect;
             Settings.Save();
         };
+        _stage.CameraShapeChanged += () => Settings.Save();
         StageHost.Content = _stage;
-
-        CameraToggle.IsChecked = Settings.Camera.Enabled;
-        MirrorToggle.IsChecked = Settings.Camera.Mirrored;
-
-        foreach (var (_, label) in ShapeOptions) ShapeBox.Items.Add(label);
-        ShapeBox.SelectedIndex = Array.FindIndex(ShapeOptions, o => o.Value == Settings.Camera.Shape);
     }
 
-    private void OnToggleCamera(object sender, RoutedEventArgs e)
-    {
-        Settings.Camera.Enabled = CameraToggle.IsChecked == true;
-        _stage?.SetCamera(Settings.Camera);
-        Settings.Save();
-    }
+    // --- Control bar --------------------------------------------------------
 
-    private void OnToggleMirror(object sender, RoutedEventArgs e)
-    {
-        Settings.Camera.Mirrored = MirrorToggle.IsChecked == true;
-        Settings.Save();
-    }
+    private PillControl? _micPill;
+    private PillControl? _camPill;
+    private Button? _drawButton;
+    private Button? _recordButton;
+    private Button? _pauseButton;
 
-    private void OnShapeChanged(object sender, SelectionChangedEventArgs e)
+    private void BuildControlBar()
     {
-        if (!_loaded || ShapeBox.SelectedIndex < 0) return;
-        Settings.Camera.Shape = ShapeOptions[ShapeBox.SelectedIndex].Value;
-        _stage?.SetCamera(Settings.Camera);
-        Settings.Save();
-    }
-
-    // --- Source -------------------------------------------------------------
-
-    private async Task RestoreSourceAsync()
-    {
-        var savedId = Settings.Recording.ScreenSourceId;
-        if (string.IsNullOrEmpty(savedId))
+        // Left group: mic, camera, source, add image, draw, settings, help.
+        _micPill = new PillControl("Microphone", Glyphs.Mic, Glyphs.MicOff);
+        _micPill.SetDevices(AudioDevices.ListMicrophones(), Settings.Recording.MicDeviceName);
+        _micPill.SetEnabled(Settings.Recording.MicEnabled);
+        _micPill.Toggled += on =>
         {
-            // Default to the primary display so the app is usable without
-            // visiting the picker first.
-            var primary = MonitorList.Enumerate().FirstOrDefault(m => m.Primary)
-                          ?? MonitorList.Enumerate().FirstOrDefault();
-            if (primary is not null) await ApplySourceAsync(CaptureSourceChoice.FromMonitor(primary));
-            return;
-        }
-
-        // A saved source may no longer exist -- the window was closed, or a
-        // monitor was unplugged. Fall back to the primary display rather than
-        // starting a take against a source that cannot produce frames.
-        var restored = CaptureSourceChoice.Resolve(savedId);
-        if (restored is null)
-        {
-            ShowStatus("The last capture source is gone. Falling back to the primary display.",
-                InfoBarSeverity.Warning);
-            var primary = MonitorList.Enumerate().FirstOrDefault(m => m.Primary);
-            if (primary is not null) await ApplySourceAsync(CaptureSourceChoice.FromMonitor(primary));
-            return;
-        }
-
-        await ApplySourceAsync(restored);
-    }
-
-    private async Task ApplySourceAsync(CaptureSourceChoice choice)
-    {
-        _source = choice;
-        Settings.Recording.ScreenSourceId = choice.Id;
-        SourceLabel.Text = choice.Label;
-        SourceThumb.Source = await choice.LoadThumbnailAsync(96);
-
-        // A still of the source behind the overlays, so the layout is arranged
-        // against what will actually be recorded rather than a black rectangle.
-        // Larger than the row thumbnail because the stage is much bigger.
-        _stage?.SetBackground(await choice.LoadThumbnailAsync(640));
-
-        Settings.Save();
-    }
-
-    private async void OnChooseSource(object sender, RoutedEventArgs e)
-    {
-        var dialog = new SourceDialog { XamlRoot = Content.XamlRoot };
-        var result = await dialog.ShowAsync();
-        if (result == ContentDialogResult.Primary && dialog.Selected is not null)
-        {
-            await ApplySourceAsync(dialog.Selected);
-        }
-    }
-
-    // --- Option handlers ----------------------------------------------------
-
-    private void OnFpsChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (!_loaded || FpsBox.SelectedIndex < 0) return;
-        Settings.Recording.Fps = FpsOptions[FpsBox.SelectedIndex];
-        Settings.Save();
-    }
-
-    private void OnResolutionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (!_loaded || ResolutionBox.SelectedIndex < 0) return;
-        Settings.Recording.Resolution = ResolutionOptions[ResolutionBox.SelectedIndex].Value;
-        Settings.Save();
-    }
-
-    private void OnQualityChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (!_loaded || QualityBox.SelectedIndex < 0) return;
-        Settings.Recording.Quality = QualityOptions[QualityBox.SelectedIndex].Value;
-        Settings.Save();
-    }
-
-    private void OnMicChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (!_loaded) return;
-        Settings.Recording.MicDeviceName = MicBox.SelectedIndex <= 0
-            ? null
-            : MicBox.SelectedItem as string;
-        Settings.Recording.MicEnabled = Settings.Recording.MicDeviceName is not null;
-        Settings.Save();
-    }
-
-    private async void OnChooseOutputDir(object sender, RoutedEventArgs e)
-    {
-        var picker = new FolderPicker { SuggestedStartLocation = PickerLocationId.VideosLibrary };
-        picker.FileTypeFilter.Add("*");
-
-        // Unpackaged apps must associate the picker with a window handle or it
-        // throws -- there is no implicit window to parent it to.
-        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
-
-        var folder = await picker.PickSingleFolderAsync();
-        if (folder is null) return;
-
-        Settings.Recording.OutputDir = folder.Path;
-        OutputDirLabel.Text = folder.Path;
-        Settings.Save();
-    }
-
-    // --- Recording ----------------------------------------------------------
-
-    private readonly Recorder _recorder = new();
-    private DispatcherTimer? _elapsedTimer;
-
-    private async void OnToggleRecord(object sender, RoutedEventArgs e)
-    {
-        if (_recorder.IsRecording)
-        {
-            await StopRecordingAsync();
-            return;
-        }
-
-        await StartRecordingAsync();
-    }
-
-    private async Task StartRecordingAsync()
-    {
-        if (_source is null)
-        {
-            ShowStatus("Pick something to record first.", InfoBarSeverity.Warning);
-            return;
-        }
-
-        // A window source cannot be handed to ddagrab, which captures whole
-        // outputs. Recording the display the window sits on is the honest
-        // fallback; silently recording the wrong thing would be worse.
-        if (_source.Kind == CaptureKind.Window)
-        {
-            ShowStatus(
-                "Window capture is not wired up yet — recording the primary display instead.",
-                InfoBarSeverity.Informational);
-        }
-
-        var dir = Settings.Recording.OutputDir ?? AppSettings.DefaultOutputDir;
-        var name = $"Recording {DateTime.Now:yyyy-MM-dd HH-mm-ss}.mp4";
-
-        // Only composite the camera when it is enabled, a device is chosen, and
-        // the user has NOT asked for the on-screen bubble.
-        //
-        // ShowOnScreen is the default and matters for frame rate, not looks:
-        // ffmpeg's libplacebo blend is framesync'd, so compositing here paces
-        // the whole graph off the webcam. A 30fps camera (15fps in dim light)
-        // pulled 60fps takes down to ~21 unique fps and 120fps takes to ~13.
-        // The bubble instead rides along as an ordinary desktop window that the
-        // screen capture picks up, and the screen is never held back.
-        var camera = Settings.Camera is { Enabled: true, ShowOnScreen: false, DeviceName: not null }
-            ? new CameraCompositeOptions
-            {
-                DeviceName = Settings.Camera.DeviceName,
-                Rect = Settings.Camera.Rect,
-                CornerRounding = Settings.Camera.Shape switch
-                {
-                    OverlayShape.Circle => 0.5,
-                    OverlayShape.Rounded => 0.15,
-                    _ => 0.0,
-                },
-                Mirrored = Settings.Camera.Mirrored,
-            }
-            : null;
-
-        var images = Settings.Images
-            .Where(i => i.Visible && File.Exists(i.FilePath))
-            .Select(i => new ImageCompositeOptions
-            {
-                FilePath = i.FilePath,
-                Rect = i.Rect,
-                Opacity = i.Opacity,
-            })
-            .ToList();
-
-        var options = new RecordOptions
-        {
-            OutputPath = Path.Combine(dir, name),
-            Fps = Settings.Recording.Fps,
-            DisplayIndex = _source.Kind == CaptureKind.Screen ? _source.MonitorIndex : 0,
-            Height = Settings.ResolutionHeight,
-            Quality = Settings.Recording.Quality,
-            MicDeviceName = Settings.Recording.MicEnabled ? Settings.Recording.MicDeviceName : null,
-            Camera = camera,
-            Images = images,
+            Settings.Recording.MicEnabled = on;
+            Settings.Save();
         };
-
-        RecordButton.IsEnabled = false;
-        try
+        _micPill.DeviceSelected += name =>
         {
-            await _recorder.StartAsync(options);
-        }
-        catch (Exception ex)
-        {
-            ShowStatus(ex.Message, InfoBarSeverity.Error);
-            return;
-        }
-        finally
-        {
-            RecordButton.IsEnabled = true;
-        }
-
-        SetRecordingUi(true);
-        StatusBar.IsOpen = false;
-        ShowToolbar();
-
-        _elapsedTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-        _elapsedTimer.Tick += (_, _) =>
-        {
-            var t = _recorder.Elapsed;
-            ElapsedLabel.Text = $"{(int)t.TotalMinutes:00}:{t.Seconds:00}";
+            Settings.Recording.MicDeviceName = name;
+            Settings.Recording.MicEnabled = true;
+            _micPill!.SetEnabled(true);
+            Settings.Save();
         };
-        _elapsedTimer.Start();
-    }
+        LeftControls.Children.Add(_micPill);
 
-    private async Task StopRecordingAsync()
-    {
-        _elapsedTimer?.Stop();
-        _elapsedTimer = null;
-
-        RecordButton.IsEnabled = false;
-        RecordLabel.Text = "Saving…";
-        try
+        _camPill = new PillControl("Camera", Glyphs.Video, Glyphs.VideoOff);
+        _camPill.SetDevices(AudioDevices.ListCameras(), Settings.Camera.DeviceName);
+        _camPill.SetEnabled(Settings.Camera.Enabled);
+        _camPill.Toggled += on =>
         {
-            var path = await _recorder.StopAsync();
-            ShowStatus($"Saved to {path}", InfoBarSeverity.Success);
-        }
-        catch (Exception ex)
-        {
-            ShowStatus(ex.Message, InfoBarSeverity.Error);
-        }
-        finally
-        {
-            RecordButton.IsEnabled = true;
-            SetRecordingUi(false);
-            ElapsedLabel.Text = "";
-            HideToolbar();
-        }
-    }
-
-    // --- Recording toolbar --------------------------------------------------
-
-    private ToolbarWindow? _toolbar;
-
-    private void ShowToolbar()
-    {
-        if (_toolbar is not null) return;
-
-        _toolbar = new ToolbarWindow(Settings);
-        _toolbar.StopRequested += () => DispatcherQueue.TryEnqueue(async () => await StopRecordingAsync());
-        _toolbar.UndoRequested += () => _overlay?.Undo();
-        _toolbar.ClearRequested += () => _overlay?.ClearAll();
-        _toolbar.ToolPicked += _ =>
-        {
-            // Picking a tool arms the overlay, so the button does what it looks
-            // like it does rather than silently setting a preference.
-            if (_overlay is null) ToggleDrawing();
+            Settings.Camera.Enabled = on;
+            _stage?.SetCamera(Settings.Camera);
+            Settings.Save();
         };
-        _toolbar.Activate();
-
-        // Report a failed exclusion rather than letting the toolbar quietly
-        // appear in the finished video.
-        if (Settings.Recording.HideToolbarFromCapture && !_toolbar.ApplyCaptureExclusion())
+        _camPill.DeviceSelected += name =>
         {
-            ShowStatus("The toolbar could not be hidden from the recording.",
-                InfoBarSeverity.Warning);
-        }
-    }
+            Settings.Camera.DeviceName = name;
+            Settings.Camera.Enabled = true;
+            _camPill!.SetEnabled(true);
+            _stage?.SetCamera(Settings.Camera);
+            Settings.Save();
+        };
+        LeftControls.Children.Add(_camPill);
 
-    private void HideToolbar()
-    {
-        _toolbar?.Close();
-        _toolbar = null;
-    }
+        LeftControls.Children.Add(RoundButton(Glyphs.Desktop, "Choose what to record",
+            (_, _) => OnChooseSource()));
 
-    private void SetRecordingUi(bool recording)
-    {
-        RecordLabel.Text = recording ? "Stop recording" : "Start recording";
-        // Segoe Fluent Icons: Stop (E71A) while recording, Record (E7C8) idle.
-        RecordIcon.Glyph = recording ? Glyphs.Stop : Glyphs.Record;
-    }
+        LeftControls.Children.Add(RoundButton(Glyphs.ImageAdd, "Add image overlay",
+            async (_, _) => await OnAddImageAsync()));
 
-    // --- Hotkeys and the drawing overlay ------------------------------------
+        // Only meaningful during a take, matching Electron: drawing over a
+        // desktop nobody is recording has no purpose.
+        _drawButton = RoundButton(Glyphs.Ink, "Draw on screen (F8)", (_, _) => ToggleDrawing());
+        _drawButton.Visibility = Visibility.Collapsed;
+        LeftControls.Children.Add(_drawButton);
 
-    private HotkeyManager? _hotkeys;
-    private OverlayWindow? _overlay;
+        LeftControls.Children.Add(SettingsButton());
+        LeftControls.Children.Add(ShortcutsButton());
 
-    private void SetupHotkeys()
-    {
-        _hotkeys = new HotkeyManager();
-        _hotkeys.Triggered += OnHotkey;
+        // Right group: pause (while recording) then the red transport button.
+        _pauseButton = RoundButton(Glyphs.Pause, "Pause", (_, _) => TogglePause());
+        _pauseButton.Visibility = Visibility.Collapsed;
+        Transport.Children.Add(_pauseButton);
 
-        if (_hotkeys.Failed.Count > 0)
+        _recordButton = new Button
         {
-            ShowStatus(
-                $"Another app already owns {string.Join(", ", _hotkeys.Failed)} — " +
-                "those shortcuts will not work.",
-                InfoBarSeverity.Warning);
-        }
+            Width = 58,
+            Height = 40,
+            CornerRadius = new CornerRadius(20),
+            Padding = new Thickness(0),
+            BorderThickness = new Thickness(0),
+            Background = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 196, 43, 28)),
+            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+            Content = new FontIcon { Glyph = Glyphs.Record, FontSize = 22 },
+        };
+        ToolTipService.SetToolTip(_recordButton, "Start recording (F9)");
+        AutomationProperties.SetName(_recordButton, "Record");
+        _recordButton.Click += async (_, _) => await ToggleRecordAsync();
+        Transport.Children.Add(_recordButton);
     }
 
-    private void OnHotkey(HotkeyAction action)
+    private static Button RoundButton(string glyph, string tooltip, RoutedEventHandler onClick)
     {
-        // WM_HOTKEY arrives on the message-only window's thread, which is this
-        // one, but the enqueue keeps UI work off the message pump either way.
-        DispatcherQueue.TryEnqueue(() =>
+        var button = new Button
         {
-            switch (action)
+            Style = (Style)Application.Current.Resources["RoundButtonStyle"],
+            Content = new FontIcon { Glyph = glyph, FontSize = 20 },
+        };
+        ToolTipService.SetToolTip(button, tooltip);
+
+        // An icon-only button has no accessible name, so screen readers (and
+        // UI-automation tests) see nothing at all. The tooltip is the name.
+        AutomationProperties.SetName(button, tooltip);
+
+        button.Click += onClick;
+        return button;
+    }
+
+    // --- Title-bar chrome ---------------------------------------------------
+
+    private bool _pinned;
+
+    private void OnTogglePin(object sender, RoutedEventArgs e)
+    {
+        _pinned = !_pinned;
+        ((OverlappedPresenter)AppWindow.Presenter).IsAlwaysOnTop = _pinned;
+        ToolTipService.SetToolTip(PinButton, _pinned ? "Unpin from top" : "Keep on top");
+        PinIcon.Foreground = _pinned
+            ? (Brush)Application.Current.Resources["AccentTextFillColorPrimaryBrush"]
+            : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
+    }
+
+    private void OnMinimize(object sender, RoutedEventArgs e)
+        => ((OverlappedPresenter)AppWindow.Presenter).Minimize();
+
+    private async void OnClose(object sender, RoutedEventArgs e)
+    {
+        // Quitting mid-take would discard the recording silently.
+        if (Busy)
+        {
+            var dialog = new ContentDialog
             {
-                case HotkeyAction.ToggleRecord:
-                    OnToggleRecord(this, new RoutedEventArgs());
-                    break;
-
-                case HotkeyAction.TogglePause:
-                    // ffmpeg has no pause: the process would have to be
-                    // suspended and the timestamps stitched afterwards. Left
-                    // unimplemented rather than silently doing nothing.
-                    ShowStatus("Pause is not implemented yet.", InfoBarSeverity.Informational);
-                    break;
-
-                case HotkeyAction.ToggleDraw:
-                    ToggleDrawing();
-                    break;
-
-                case HotkeyAction.ClearDraw:
-                    _overlay?.ClearAll();
-                    break;
-            }
-        });
-    }
-
-    private void ToggleDrawing()
-    {
-        if (_overlay is null)
-        {
-            _overlay = new OverlayWindow(Settings);
-            _overlay.Dismissed += () => ToggleDrawing();
-            _overlay.Activate();
-            _overlay.SetInteractive(true);
-            ShowStatus("Drawing on — F8 to exit, Ctrl+Shift+X to clear.",
-                InfoBarSeverity.Informational);
-            return;
+                XamlRoot = Content.XamlRoot,
+                Title = "Recording in progress",
+                Content = "A recording is still running.\n\n" +
+                          "Quitting now discards it. Stop the recording first to save it.",
+                PrimaryButtonText = "Discard and quit",
+                CloseButtonText = "Keep recording",
+                DefaultButton = ContentDialogButton.Close,
+            };
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
         }
 
-        // Second press exits drawing entirely rather than merely making the
-        // overlay click-through: leaving an invisible armed window over the
-        // desktop is confusing, and the strokes should go with it.
-        _overlay.Close();
-        _overlay = null;
-        StatusBar.IsOpen = false;
-    }
-
-    internal void ShowStatus(string message, InfoBarSeverity severity)
-    {
-        StatusBar.Message = message;
-        StatusBar.Severity = severity;
-        StatusBar.IsOpen = true;
+        Close();
     }
 }

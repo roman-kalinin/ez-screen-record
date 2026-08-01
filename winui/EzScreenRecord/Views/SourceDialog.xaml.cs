@@ -54,18 +54,42 @@ public sealed partial class SourceDialog : ContentDialog
 
     public CaptureSourceChoice? Selected { get; private set; }
 
-    public SourceDialog()
+    /// <summary>
+    /// Guards against overlapping loads. SelectorBar raises SelectionChanged
+    /// during its own initialisation, so that fires alongside Loaded and both
+    /// call LoadAsync; each awaits enumeration and then appends, so every source
+    /// appeared twice.
+    /// </summary>
+    private int _loadGeneration;
+
+    /// <param name="current">
+    /// The source in use, so the dialog opens on the matching tab rather than
+    /// always on Screens.
+    /// </param>
+    public SourceDialog(CaptureSourceChoice? current = null)
     {
         InitializeComponent();
         SourceGrid.ItemsSource = _cards;
+
+        if (current is { Kind: CaptureKind.Window })
+        {
+            ScreensTab.IsSelected = false;
+            WindowsTab.IsSelected = true;
+        }
+
         Loaded += async (_, _) => await LoadAsync();
-        PrimaryButtonClick += OnPrimaryClick;
+        PrimaryButtonClick += (_, _) => OnClearSelection(this, new RoutedEventArgs());
     }
 
     private bool ShowingWindows => WindowsTab.IsSelected;
 
     private async Task LoadAsync()
     {
+        // Newest load wins. SelectorBar fires SelectionChanged while it
+        // initialises, so this races with the Loaded handler; both awaited
+        // enumeration and then appended, which listed every source twice.
+        var generation = ++_loadGeneration;
+
         LoadingRing.IsActive = true;
         SourceGrid.Visibility = Visibility.Collapsed;
         EmptyMessage.Visibility = Visibility.Collapsed;
@@ -96,6 +120,11 @@ public sealed partial class SourceDialog : ContentDialog
             return;
         }
 
+        // A newer load started while this one was awaiting; drop these results
+        // rather than appending them to whatever it produced.
+        if (generation != _loadGeneration) return;
+
+        _cards.Clear();
         foreach (var choice in choices)
             _cards.Add(new SourceCard { Choice = choice });
 
@@ -136,21 +165,30 @@ public sealed partial class SourceDialog : ContentDialog
     }
 
     /// <summary>
-    /// A minimized window cannot be captured until it is restored, so restore it
-    /// as part of confirming the selection rather than failing at record time.
-    ///
-    /// Wired as an event rather than an override: unlike UWP/WPF, WinUI 3's
-    /// ContentDialog does not expose OnPrimaryButtonClick as virtual.
+    /// Clicking a card picks it and closes, matching Electron. Requiring a
+    /// second click on a Select button is a step nobody wants.
     /// </summary>
-    private async void OnPrimaryClick(ContentDialog sender, ContentDialogButtonClickEventArgs args)
+    private async void OnItemClick(object sender, ItemClickEventArgs e)
     {
-        if (Selected is not { Kind: CaptureKind.Window, Minimized: true }) return;
+        if (e.ClickedItem is not SourceCard card) return;
+        Selected = card.Choice;
 
-        // Hold the dialog open until the window is actually back, so the caller
-        // never receives a source that still cannot produce frames.
-        var deferral = args.GetDeferral();
-        await WindowList.RestoreForCaptureAsync(Selected.WindowHandle);
-        deferral.Complete();
+        if (card.Choice is { Kind: CaptureKind.Window, Minimized: true })
+            await WindowList.RestoreForCaptureAsync(card.Choice.WindowHandle);
+
+        Hide();
     }
+
+    /// <summary>Clear the source entirely; a chosen source must be un-choosable.</summary>
+    private void OnClearSelection(object sender, RoutedEventArgs e)
+    {
+        Selected = null;
+        Cleared = true;
+        Hide();
+    }
+
+    /// <summary>True when the user explicitly cleared rather than cancelled.</summary>
+    public bool Cleared { get; private set; }
+
 }
 

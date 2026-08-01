@@ -1,6 +1,6 @@
+using EzScreenRecord.Capture;
 using EzScreenRecord.Models;
 using Microsoft.UI;
-using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -8,40 +8,48 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Shapes;
 using Windows.Foundation;
+using Windows.Media.Capture;
 using Windows.UI;
 
-// Our normalised overlay rect, not Windows.Foundation.Rect (which is in pixels
-// and comes in via the Windows.Foundation import above).
+// Our normalised overlay rect, not Windows.Foundation.Rect (which is in pixels).
 using Rect = EzScreenRecord.Models.Rect;
 
 namespace EzScreenRecord.Views;
 
 /// <summary>
-/// A live 16:9 preview of the final frame, with draggable/resizable overlays.
+/// The live 16:9 preview of the final frame.
 ///
-/// Built from XAML primitives on a Canvas rather than Win2D: the overlays are a
-/// handful of rectangles with hit-testing and pointer capture, which the XAML
-/// input system already does well. Win2D earns its place in the annotation
-/// overlay (Phase 4), where strokes are drawn per-frame at high rates; here it
-/// would mean reimplementing hit-testing and focus for no gain.
-///
-/// All positions are normalised (0..1) against the frame, so what is arranged
-/// here lands identically on a capture of any resolution.
+/// Everything is in normalised (0..1) coordinates, so a layout arranged here
+/// lands identically on a capture of any resolution. The screen behind it is a
+/// live feed rather than a still: a static thumbnail cannot show what is
+/// actually about to be recorded.
 /// </summary>
 public sealed class LayoutStageControl : UserControl
 {
     private const double AnchorSize = 14;
+    /// <summary>
+    /// Preview refresh. Deliberately slow: this runs while the app merely sits
+    /// open, and the preview only has to show WHERE things are, not play back
+    /// smoothly. Electron throttles its equivalent to 15fps for the same reason.
+    /// </summary>
+    private static readonly TimeSpan ScreenRefresh = TimeSpan.FromMilliseconds(1000 / 8.0);
 
-    private Canvas? _canvas;
-    private Border? _cameraBox;
+    private readonly Grid _root;
+    private readonly Image _screen;
+    private readonly TextBlock _placeholder;
+    private readonly Canvas _canvas;
+    private readonly Border _cameraBox;
+    private readonly MediaPlayerElement _cameraPreview;
     private readonly List<Rectangle> _anchors = [];
+    private readonly StackPanel _shapeBar;
 
     private CameraOverlay _camera = new();
+    private CaptureSourceChoice? _source;
+    private MediaCapture? _capture;
+    private DispatcherTimer? _screenTimer;
 
-    /// <summary>Raised when the user finishes a drag, so settings can persist.</summary>
     public event Action<Rect>? CameraRectChanged;
-
-    // --- Drag state ---------------------------------------------------------
+    public event Action? CameraShapeChanged;
 
     private enum DragKind { None, Move, Resize }
 
@@ -49,53 +57,33 @@ public sealed class LayoutStageControl : UserControl
     private Corner _dragCorner;
     private Point _dragStart;
     private Rect _dragOrigin = new();
-    private UIElement? _captured;
 
     public LayoutStageControl()
     {
-        Build();
-    }
+        _screen = new Image { Stretch = Stretch.UniformToFill };
 
-    public void SetCamera(CameraOverlay camera)
-    {
-        _camera = camera;
-        Layout();
-    }
-
-    /// <summary>Show a still of the capture source behind the overlays.</summary>
-    public void SetBackground(BitmapImage? image)
-    {
-        if (_canvas is null) return;
-        _canvas.Background = image is null
-            ? new SolidColorBrush(Colors.Black)
-            : new ImageBrush { ImageSource = image, Stretch = Stretch.UniformToFill };
-    }
-
-    private void Build()
-    {
-        _canvas = new Canvas
+        _placeholder = new TextBlock
         {
-            Background = new SolidColorBrush(Colors.Black),
+            Text = "Pick a screen or window to see a live preview",
+            Foreground = new SolidColorBrush(Color.FromArgb(160, 255, 255, 255)),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
         };
 
-        // The camera bubble. Its own Border is clipped to give the bubble its
-        // shape; the selection frame and anchors are SIBLINGS rather than
-        // children, because a clipped circle swallows handles drawn inside it.
+        _cameraPreview = new MediaPlayerElement { Stretch = Stretch.UniformToFill };
+
         _cameraBox = new Border
         {
-            BorderBrush = new SolidColorBrush(Colors.White),
-            BorderThickness = new Thickness(2),
+            Child = _cameraPreview,
             Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
-            Child = new TextBlock
-            {
-                Text = "Camera",
-                Foreground = new SolidColorBrush(Colors.White),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-                FontSize = 12,
-            },
+            BorderBrush = new SolidColorBrush(Color.FromArgb(220, 10, 132, 255)),
+            BorderThickness = new Thickness(1.5),
         };
-        _cameraBox.PointerPressed += (s, e) => BeginDrag(e, DragKind.Move, default, (UIElement)s);
+        _cameraBox.PointerPressed += (_, e) => BeginDrag(e, DragKind.Move, default);
+
+        _canvas = new Canvas();
         _canvas.Children.Add(_cameraBox);
 
         foreach (var corner in (Corner[])Enum.GetValues(typeof(Corner)))
@@ -105,40 +93,290 @@ public sealed class LayoutStageControl : UserControl
                 Width = AnchorSize,
                 Height = AnchorSize,
                 Fill = new SolidColorBrush(Colors.White),
-                Stroke = new SolidColorBrush(Color.FromArgb(160, 0, 0, 0)),
-                StrokeThickness = 1,
-                RadiusX = 3,
-                RadiusY = 3,
+                Stroke = new SolidColorBrush(Color.FromArgb(255, 10, 132, 255)),
+                StrokeThickness = 2,
+                RadiusX = 2,
+                RadiusY = 2,
                 Tag = corner,
             };
             anchor.PointerPressed += (s, e) =>
-            {
-                var el = (FrameworkElement)s;
-                BeginDrag(e, DragKind.Resize, (Corner)el.Tag!, el);
-            };
+                BeginDrag(e, DragKind.Resize, (Corner)((FrameworkElement)s).Tag!);
             _anchors.Add(anchor);
             _canvas.Children.Add(anchor);
         }
 
-        _canvas.SizeChanged += (_, _) => Layout();
+        _shapeBar = BuildShapeBar();
+        _canvas.Children.Add(_shapeBar);
+
+        _root = new Grid
+        {
+            Background = new SolidColorBrush(Colors.Black),
+            CornerRadius = new CornerRadius(6),
+        };
+        _root.Children.Add(_screen);
+        _root.Children.Add(_placeholder);
+        _root.Children.Add(_canvas);
+        _root.Children.Add(HintChip());
+
+        _root.SizeChanged += (_, _) => Layout();
         PointerMoved += OnPointerMoved;
         PointerReleased += OnPointerReleased;
         PointerCaptureLost += OnPointerReleased;
 
-        Content = _canvas;
+        // 16:9, enforced. The drag coordinate space IS the output frame, so the
+        // stage must hold the aspect ratio exactly or every position is wrong.
+        var ratio = new Viewbox { Child = _root, Stretch = Stretch.Uniform };
+        _root.Width = 640;
+        _root.Height = 360;
+
+        Content = ratio;
+        Layout();
     }
+
+    private UIElement HintChip() => new Border
+    {
+        Background = new SolidColorBrush(Color.FromArgb(166, 0, 0, 0)),
+        CornerRadius = new CornerRadius(4),
+        Padding = new Thickness(8, 3, 8, 3),
+        Margin = new Thickness(8),
+        HorizontalAlignment = HorizontalAlignment.Left,
+        VerticalAlignment = VerticalAlignment.Bottom,
+        IsHitTestVisible = false,
+        Child = new TextBlock
+        {
+            Text = "Drag to move · corner handle to resize",
+            FontSize = 11,
+            Foreground = new SolidColorBrush(Color.FromArgb(220, 255, 255, 255)),
+        },
+    };
+
+    /// <summary>
+    /// The floating shape bar that appears on the camera: rounded / square /
+    /// circle / mirror / shadow, exactly as in the Electron preview.
+    /// </summary>
+    private StackPanel BuildShapeBar()
+    {
+        var bar = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 2,
+            Padding = new Thickness(3),
+            Visibility = Visibility.Collapsed,
+        };
+
+        void Add(string glyph, string tip, Func<bool> isActive, Action onClick)
+        {
+            var button = new Button
+            {
+                Content = new FontIcon { Glyph = glyph, FontSize = 13 },
+                Width = 26,
+                Height = 26,
+                Padding = new Thickness(0),
+                CornerRadius = new CornerRadius(4),
+                BorderThickness = new Thickness(0),
+            };
+            ToolTipService.SetToolTip(button, tip);
+            button.Click += (_, _) =>
+            {
+                onClick();
+                RefreshShapeBar();
+                Layout();
+                CameraShapeChanged?.Invoke();
+            };
+            button.Tag = isActive;
+            bar.Children.Add(button);
+        }
+
+        Add(Glyphs.Rectangle, "Rounded",
+            () => _camera.Shape == OverlayShape.Rounded,
+            () => _camera.Shape = OverlayShape.Rounded);
+        Add(Glyphs.Square, "Square",
+            () => _camera.Shape == OverlayShape.Square,
+            () => _camera.Shape = OverlayShape.Square);
+        Add(Glyphs.Circle, "Circle",
+            () => _camera.Shape == OverlayShape.Circle,
+            () => _camera.Shape = OverlayShape.Circle);
+        Add(Glyphs.Mirror, "Mirror",
+            () => _camera.Mirrored,
+            () => _camera.Mirrored = !_camera.Mirrored);
+        Add(Glyphs.Shadow, "Drop shadow",
+            () => _camera.Shadow,
+            () => _camera.Shadow = !_camera.Shadow);
+
+        var host = new StackPanel { Orientation = Orientation.Horizontal };
+        var wrapper = new Border
+        {
+            Child = bar,
+            Background = new SolidColorBrush(Color.FromArgb(240, 28, 28, 32)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(36, 255, 255, 255)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(6),
+        };
+        host.Children.Add(wrapper);
+        host.Visibility = Visibility.Collapsed;
+        return host;
+    }
+
+    private void RefreshShapeBar()
+    {
+        var wrapper = (Border)((StackPanel)_shapeBar).Children[0];
+        foreach (var child in ((StackPanel)wrapper.Child).Children)
+        {
+            if (child is Button { Tag: Func<bool> isActive } button)
+            {
+                button.Background = isActive()
+                    ? (Brush)Application.Current.Resources["AccentFillColorDefaultBrush"]
+                    : new SolidColorBrush(Colors.Transparent);
+            }
+        }
+    }
+
+    // --- Public API ---------------------------------------------------------
+
+    public void SetCamera(CameraOverlay camera)
+    {
+        _camera = camera;
+        RefreshShapeBar();
+        Layout();
+        _ = camera.Enabled ? StartCameraAsync() : Task.Run(StopCamera);
+    }
+
+    public void SetImages(IReadOnlyList<ImageOverlay> images)
+    {
+        // Image overlays render beneath the camera, matching the recorder's
+        // compositing order. Placement UI for them is still to come.
+        Layout();
+    }
+
+    public async Task SetSourceAsync(CaptureSourceChoice source)
+    {
+        _source = source;
+        _placeholder.Visibility = Visibility.Collapsed;
+        await StartPreviewsAsync();
+    }
+
+    /// <summary>Start (or restart) the live screen and camera previews.</summary>
+    public async Task StartPreviewsAsync()
+    {
+        StartScreenPreview();
+        if (_camera.Enabled) await StartCameraAsync();
+    }
+
+    /// <summary>
+    /// Release the capture devices. ffmpeg needs exclusive access to the webcam
+    /// during a take, and refreshing a screen preview while recording is wasted
+    /// GPU time.
+    /// </summary>
+    public void StopPreviews()
+    {
+        _screenTimer?.Stop();
+        _screenTimer = null;
+        StopCamera();
+    }
+
+    // --- Live screen preview ------------------------------------------------
+
+    private void StartScreenPreview()
+    {
+        _screenTimer?.Stop();
+        if (_source is null) return;
+
+        _screenTimer = new DispatcherTimer { Interval = ScreenRefresh };
+        _screenTimer.Tick += async (_, _) => await RefreshScreenAsync();
+        _screenTimer.Start();
+
+        _ = RefreshScreenAsync();
+    }
+
+    private bool _refreshing;
+
+    private async Task RefreshScreenAsync()
+    {
+        // Skip rather than queue: a slow PrintWindow must not build a backlog
+        // of frames that are already stale by the time they are drawn.
+        if (_refreshing || _source is null) return;
+        _refreshing = true;
+        try
+        {
+            var image = await _source.LoadThumbnailAsync(960);
+            if (image is not null)
+            {
+                _screen.Source = image;
+                _placeholder.Visibility = Visibility.Collapsed;
+            }
+        }
+        catch
+        {
+            // A window that closed mid-preview; the next tick will notice.
+        }
+        finally
+        {
+            _refreshing = false;
+        }
+    }
+
+    // --- Live camera preview ------------------------------------------------
+
+    private async Task StartCameraAsync()
+    {
+        if (_capture is not null) return;
+
+        try
+        {
+            _capture = new MediaCapture();
+            await _capture.InitializeAsync(new MediaCaptureInitializationSettings
+            {
+                StreamingCaptureMode = StreamingCaptureMode.Video,
+                MemoryPreference = MediaCaptureMemoryPreference.Cpu,
+            });
+
+            // Explicit iteration: LINQ cannot enumerate WinRT projections.
+            Windows.Media.Capture.Frames.MediaFrameSource? source = null;
+            foreach (var candidate in _capture.FrameSources)
+            {
+                source ??= candidate.Value;
+                if (candidate.Value.Info.MediaStreamType == MediaStreamType.VideoPreview)
+                {
+                    source = candidate.Value;
+                    break;
+                }
+            }
+
+            if (source is not null)
+            {
+                _cameraPreview.Source =
+                    Windows.Media.Core.MediaSource.CreateFromMediaFrameSource(source);
+                _cameraPreview.AutoPlay = true;
+            }
+        }
+        catch
+        {
+            // No camera, or another app holds it. The box stays as an outline
+            // rather than taking the app down.
+            StopCamera();
+        }
+    }
+
+    private void StopCamera()
+    {
+        try { _cameraPreview.Source = null; } catch { /* already torn down */ }
+        try { _capture?.Dispose(); } catch { /* already gone */ }
+        _capture = null;
+    }
+
+    // --- Layout -------------------------------------------------------------
 
     private void Layout()
     {
-        if (_canvas is null || _cameraBox is null) return;
-        var w = _canvas.ActualWidth;
-        var h = _canvas.ActualHeight;
+        var w = _root.Width;
+        var h = _root.Height;
         if (w <= 0 || h <= 0) return;
 
         var visible = _camera.Enabled;
         _cameraBox.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         foreach (var a in _anchors)
             a.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        _shapeBar.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         if (!visible) return;
 
         var r = _camera.Rect;
@@ -149,52 +387,67 @@ public sealed class LayoutStageControl : UserControl
 
         _cameraBox.Width = pw;
         _cameraBox.Height = ph;
-        // A circle is a fully-rounded rectangle; matching the recorder's
-        // corner_rounding keeps the preview honest about the output.
         _cameraBox.CornerRadius = _camera.Shape switch
         {
             OverlayShape.Circle => new CornerRadius(Math.Min(pw, ph) / 2),
             OverlayShape.Rounded => new CornerRadius(Math.Min(pw, ph) * 0.12),
             _ => new CornerRadius(0),
         };
+
+        // Mirroring is what the recording does, so the preview must match or
+        // the layout is a lie.
+        _cameraPreview.RenderTransformOrigin = new Point(0.5, 0.5);
+        _cameraPreview.RenderTransform = _camera.Mirrored
+            ? new ScaleTransform { ScaleX = -1 }
+            : null;
+
+        _cameraBox.Shadow = _camera.Shadow ? new ThemeShadow() : null;
+        _cameraBox.Translation = _camera.Shadow
+            ? new System.Numerics.Vector3(0, 0, 16)
+            : new System.Numerics.Vector3(0, 0, 0);
+
         Canvas.SetLeft(_cameraBox, px);
         Canvas.SetTop(_cameraBox, py);
 
-        for (var i = 0; i < _anchors.Count; i++)
+        foreach (var anchor in _anchors)
         {
-            var (ax, ay) = (Corner)_anchors[i].Tag! switch
+            var (ax, ay) = (Corner)anchor.Tag! switch
             {
                 Corner.NW => (px, py),
                 Corner.NE => (px + pw, py),
                 Corner.SW => (px, py + ph),
                 _ => (px + pw, py + ph),
             };
-            Canvas.SetLeft(_anchors[i], ax - AnchorSize / 2);
-            Canvas.SetTop(_anchors[i], ay - AnchorSize / 2);
+            Canvas.SetLeft(anchor, ax - AnchorSize / 2);
+            Canvas.SetTop(anchor, ay - AnchorSize / 2);
         }
+
+        // Above the camera, or below it when the camera is near the top edge --
+        // otherwise the bar would sit off the stage.
+        Canvas.SetLeft(_shapeBar, px);
+        Canvas.SetTop(_shapeBar, r.Y < 0.14 ? py + ph + 8 : py - 38);
     }
 
-    private void BeginDrag(PointerRoutedEventArgs e, DragKind kind, Corner corner, UIElement source)
+    // --- Drag / resize ------------------------------------------------------
+
+    private void BeginDrag(PointerRoutedEventArgs e, DragKind kind, Corner corner)
     {
         _dragKind = kind;
         _dragCorner = corner;
-        _dragStart = e.GetCurrentPoint(this).Position;
+        _dragStart = e.GetCurrentPoint(_root).Position;
         _dragOrigin = _camera.Rect.Clone();
-        _captured = source;
         CapturePointer(e.Pointer);
         e.Handled = true;
     }
 
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
     {
-        if (_dragKind == DragKind.None || _canvas is null) return;
-        var w = _canvas.ActualWidth;
-        var h = _canvas.ActualHeight;
+        if (_dragKind == DragKind.None) return;
+        var w = _root.Width;
+        var h = _root.Height;
         if (w <= 0 || h <= 0) return;
 
-        var p = e.GetCurrentPoint(this).Position;
-        // Deltas are normalised by the stage size, so a drag maps 1:1 onto the
-        // frame regardless of how large the preview is drawn.
+        var p = e.GetCurrentPoint(_root).Position;
         var dx = (p.X - _dragStart.X) / w;
         var dy = (p.Y - _dragStart.Y) / h;
 
@@ -210,7 +463,6 @@ public sealed class LayoutStageControl : UserControl
     {
         if (_dragKind == DragKind.None) return;
         _dragKind = DragKind.None;
-        _captured = null;
         ReleasePointerCaptures();
         CameraRectChanged?.Invoke(_camera.Rect);
         e.Handled = true;

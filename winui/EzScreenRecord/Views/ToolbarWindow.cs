@@ -4,7 +4,6 @@ using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Windows.Foundation;
@@ -14,62 +13,142 @@ using Windows.UI;
 namespace EzScreenRecord.Views;
 
 /// <summary>
-/// The small always-on-top bar shown while recording: stop, pause, draw tools.
+/// The floating recording bar, in the Zoom/Meet share-bar idiom.
 ///
-/// It is kept OUT of the capture by default -- the recorder's own chrome has no
-/// place in a tutorial. That is a setting rather than always-on because Windows
-/// applies display affinity to EVERY capture on the machine, so an excluded
-/// toolbar also vanishes from a Zoom or Teams share while recording.
+/// The WINDOW spans the whole display and is transparent and click-through;
+/// only the pill inside it takes input. That matters: shrinking the window to
+/// the size of the bar means every dropdown and tooltip opens inside it and is
+/// clipped, because a window cannot draw outside its own bounds.
+///
+/// The bar is always dark regardless of the system theme — it sits over the
+/// user's own content, and a light strip there is glaring.
 /// </summary>
 public sealed class ToolbarWindow : Window
 {
     private readonly AppSettings _settings;
-    private readonly StackPanel _tools;
+    private readonly Canvas _root;
+    private readonly Border _bar;
+    private readonly TextBlock _timer;
+    private readonly Button _drawButton;
 
     private bool _dragging;
     private Point _dragStart;
-    private PointInt32 _windowStart;
+    private Point _barStart;
 
     public event Action? StopRequested;
-    public event Action<DrawTool>? ToolPicked;
-    public event Action? UndoRequested;
-    public event Action? ClearRequested;
+    public event Action? PauseRequested;
+    public event Action? DrawRequested;
+    public event Action? SourceRequested;
 
     public ToolbarWindow(AppSettings settings)
     {
         _settings = settings;
-        Title = "Recording";
+        Title = "Ez Screen Record — toolbar";
 
-        _tools = new StackPanel
+        var content = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 4,
-            Padding = new Thickness(8),
+            Spacing = 10,
+            VerticalAlignment = VerticalAlignment.Center,
+            Padding = new Thickness(6, 8, 10, 8),
         };
 
-        AddButton(Glyphs.Stop, "Stop recording (F9)", () => StopRequested?.Invoke());
-        AddSeparator();
-        AddToolButton(Glyphs.Pen, "Pen (P)", DrawTool.Pen);
-        AddToolButton(Glyphs.Highlighter, "Highlighter (H)", DrawTool.Highlighter);
-        AddToolButton(Glyphs.Arrow, "Arrow (A)", DrawTool.Arrow);
-        AddToolButton(Glyphs.Rectangle, "Rectangle (R)", DrawTool.Rect);
-        AddToolButton(Glyphs.Ellipse, "Ellipse (O)", DrawTool.Ellipse);
-        AddToolButton(Glyphs.Eraser, "Eraser (E)", DrawTool.Eraser);
-        AddSeparator();
-        AddButton(Glyphs.Undo, "Undo (Ctrl+Z)", () => UndoRequested?.Invoke());
-        AddButton(Glyphs.Delete, "Clear all (Del)", () => ClearRequested?.Invoke());
-
-        var root = new Border
+        // Drag grip. The bar moves WITHIN the full-screen window, so this
+        // repositions the bar rather than the window.
+        var grip = new Border
         {
-            Child = _tools,
-            CornerRadius = new CornerRadius(8),
-            Background = new SolidColorBrush(Color.FromArgb(230, 32, 32, 32)),
+            Width = 18,
+            Height = 32,
+            Background = new SolidColorBrush(Colors.Transparent),
+            Child = new FontIcon
+            {
+                Glyph = Glyphs.Grip,
+                FontSize = 18,
+                Foreground = new SolidColorBrush(Color.FromArgb(115, 255, 255, 255)),
+            },
         };
-        root.PointerPressed += OnPointerPressed;
-        root.PointerMoved += OnPointerMoved;
-        root.PointerReleased += OnPointerReleased;
+        ToolTipService.SetToolTip(grip, "Drag to move");
+        grip.PointerPressed += OnGripPressed;
+        grip.PointerMoved += OnGripMoved;
+        grip.PointerReleased += OnGripReleased;
+        content.Children.Add(grip);
 
-        Content = root;
+        content.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse
+        {
+            Width = 10,
+            Height = 10,
+            Fill = new SolidColorBrush(Color.FromArgb(255, 255, 59, 48)),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+
+        var mic = new PillControl("Microphone", Glyphs.Mic, Glyphs.MicOff);
+        mic.SetDevices(Capture.AudioDevices.ListMicrophones(), settings.Recording.MicDeviceName);
+        mic.SetEnabled(settings.Recording.MicEnabled);
+        mic.Toggled += on => { settings.Recording.MicEnabled = on; settings.Save(); };
+        mic.DeviceSelected += name => { settings.Recording.MicDeviceName = name; settings.Save(); };
+        content.Children.Add(mic);
+
+        var cam = new PillControl("Camera", Glyphs.Video, Glyphs.VideoOff);
+        cam.SetDevices(Capture.AudioDevices.ListCameras(), settings.Camera.DeviceName);
+        cam.SetEnabled(settings.Camera.Enabled);
+        cam.Toggled += on => { settings.Camera.Enabled = on; settings.Save(); };
+        cam.DeviceSelected += name => { settings.Camera.DeviceName = name; settings.Save(); };
+        content.Children.Add(cam);
+
+        content.Children.Add(Round(Glyphs.Desktop, "Change source", () => SourceRequested?.Invoke()));
+
+        _drawButton = Round(Glyphs.Ink, "Draw on screen (F8)", () => DrawRequested?.Invoke());
+        content.Children.Add(_drawButton);
+
+        content.Children.Add(new Border
+        {
+            Width = 1,
+            Height = 26,
+            Background = new SolidColorBrush(Color.FromArgb(41, 255, 255, 255)),
+        });
+
+        _timer = new TextBlock
+        {
+            Text = "00:00",
+            FontSize = 18,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Colors.White),
+            MinWidth = 58,
+            TextAlignment = TextAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        content.Children.Add(_timer);
+
+        content.Children.Add(Round(Glyphs.Pause, "Pause", () => PauseRequested?.Invoke()));
+
+        var stop = new Button
+        {
+            Width = 58,
+            Height = 40,
+            CornerRadius = new CornerRadius(20),
+            Padding = new Thickness(0),
+            BorderThickness = new Thickness(0),
+            Background = new SolidColorBrush(Color.FromArgb(255, 196, 43, 28)),
+            Foreground = new SolidColorBrush(Colors.White),
+            Content = new FontIcon { Glyph = Glyphs.Stop, FontSize = 22 },
+        };
+        ToolTipService.SetToolTip(stop, "Stop recording (F9)");
+        stop.Click += (_, _) => StopRequested?.Invoke();
+        content.Children.Add(stop);
+
+        _bar = new Border
+        {
+            Child = content,
+            CornerRadius = new CornerRadius(32),
+            Background = new SolidColorBrush(Color.FromArgb(247, 28, 28, 32)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(31, 255, 255, 255)),
+            BorderThickness = new Thickness(1),
+            RequestedTheme = ElementTheme.Dark,
+        };
+
+        _root = new Canvas();
+        _root.Children.Add(_bar);
+        Content = _root;
 
         ExtendsContentIntoTitleBar = true;
 
@@ -82,108 +161,108 @@ public sealed class ToolbarWindow : Window
 
         AppWindow.IsShownInSwitchers = false;
 
-        PositionAtTopCenter();
-        ApplyCaptureExclusion();
+        CoverDisplay();
+        ApplyBaseStyles();
+
+        _bar.SizeChanged += (_, _) => PositionBar();
+        _root.Loaded += (_, _) => PositionBar();
     }
 
     private IntPtr Hwnd => WinRT.Interop.WindowNative.GetWindowHandle(this);
 
-    private void AddButton(string glyph, string tooltip, Action onClick)
+    private Button Round(string glyph, string tooltip, Action onClick)
     {
         var button = new Button
         {
-            Content = new FontIcon { Glyph = glyph, FontSize = 14 },
-            Padding = new Thickness(8, 6, 8, 6),
+            Width = 40,
+            Height = 40,
+            CornerRadius = new CornerRadius(20),
+            Padding = new Thickness(0),
+            BorderThickness = new Thickness(0),
+            Background = new SolidColorBrush(Color.FromArgb(26, 255, 255, 255)),
+            Foreground = new SolidColorBrush(Colors.White),
+            Content = new FontIcon { Glyph = glyph, FontSize = 20 },
         };
         ToolTipService.SetToolTip(button, tooltip);
         button.Click += (_, _) => onClick();
-        _tools.Children.Add(button);
+        return button;
     }
 
-    private void AddToolButton(string glyph, string tooltip, DrawTool tool)
-    {
-        var button = new ToggleButton
-        {
-            Content = new FontIcon { Glyph = glyph, FontSize = 14 },
-            Padding = new Thickness(8, 6, 8, 6),
-            IsChecked = _settings.Draw.Tool == tool,
-            Tag = tool,
-        };
-        ToolTipService.SetToolTip(button, tooltip);
-        button.Click += (s, _) =>
-        {
-            _settings.Draw.Tool = tool;
-            // Radio behaviour: exactly one tool is active at a time.
-            foreach (var child in _tools.Children)
-                if (child is ToggleButton other && other.Tag is DrawTool)
-                    other.IsChecked = ReferenceEquals(other, s);
-
-            ToolPicked?.Invoke(tool);
-            _settings.Save();
-        };
-        _tools.Children.Add(button);
-    }
-
-    private void AddSeparator() => _tools.Children.Add(new Border
-    {
-        Width = 1,
-        Margin = new Thickness(4, 6, 4, 6),
-        Background = new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)),
-    });
-
-    private void PositionAtTopCenter()
+    private void CoverDisplay()
     {
         var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary);
-        var work = area.WorkArea;
-        var size = AppWindow.Size;
-
-        AppWindow.Move(new PointInt32(
-            work.X + (work.Width - size.Width) / 2,
-            work.Y + 24));
+        var b = area.OuterBounds;
+        AppWindow.MoveAndResize(new RectInt32(b.X, b.Y, b.Width, b.Height));
     }
+
+    /// <summary>Top-centre by default, like Zoom's share bar.</summary>
+    private void PositionBar()
+    {
+        if (_bar.ActualWidth <= 0) return;
+        Canvas.SetLeft(_bar, (_root.ActualWidth - _bar.ActualWidth) / 2);
+        Canvas.SetTop(_bar, 14);
+    }
+
+    private void ApplyBaseStyles()
+    {
+        // Layered so the bar can be excluded from capture; toolwindow to stay
+        // out of Alt-Tab; noactivate so it never steals focus from the app
+        // being demonstrated.
+        Win32.AddExStyle(Hwnd,
+            Win32.WS_EX_LAYERED | Win32.WS_EX_TOOLWINDOW | Win32.WS_EX_NOACTIVATE);
+        Win32.SetWindowPos(Hwnd, Win32.HWND_TOPMOST, 0, 0, 0, 0,
+            Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE);
+    }
+
+    public void SetElapsed(string text) => _timer.Text = text;
+
+    public void SetDrawActive(bool active)
+        => _drawButton.Background = new SolidColorBrush(active
+            ? Color.FromArgb(255, 10, 132, 255)
+            : Color.FromArgb(26, 255, 255, 255));
 
     /// <summary>
     /// Apply the hide-from-capture setting, and report whether it stuck.
-    ///
-    /// WDA_EXCLUDEFROMCAPTURE silently requires WS_EX_LAYERED, and returns TRUE
-    /// even when the prerequisite is missing, so the affinity is read back
-    /// rather than assumed.
+    /// SetWindowDisplayAffinity returns TRUE even when its WS_EX_LAYERED
+    /// prerequisite is missing, so the affinity is read back rather than
+    /// assumed.
     /// </summary>
     public bool ApplyCaptureExclusion()
     {
         var hide = _settings.Recording.HideToolbarFromCapture;
-
         Win32.AddExStyle(Hwnd, Win32.WS_EX_LAYERED);
         Win32.SetWindowDisplayAffinity(
             Hwnd, hide ? Win32.WDA_EXCLUDEFROMCAPTURE : Win32.WDA_NONE);
-
         Win32.GetWindowDisplayAffinity(Hwnd, out var actual);
         return actual == (hide ? Win32.WDA_EXCLUDEFROMCAPTURE : Win32.WDA_NONE);
     }
 
-    // --- Dragging -----------------------------------------------------------
+    // --- Dragging the bar within the window ---------------------------------
 
-    private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
+    private void OnGripPressed(object sender, PointerRoutedEventArgs e)
     {
-        // Buttons handle their own clicks; only bare chrome starts a drag.
-        if (e.OriginalSource is FrameworkElement { Parent: ButtonBase }) return;
-
         _dragging = true;
-        _dragStart = e.GetCurrentPoint(null).Position;
-        _windowStart = AppWindow.Position;
+        _dragStart = e.GetCurrentPoint(_root).Position;
+        _barStart = new Point(Canvas.GetLeft(_bar), Canvas.GetTop(_bar));
         ((UIElement)sender).CapturePointer(e.Pointer);
     }
 
-    private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
+    private void OnGripMoved(object sender, PointerRoutedEventArgs e)
     {
         if (!_dragging) return;
-        var p = e.GetCurrentPoint(null).Position;
-        AppWindow.Move(new PointInt32(
-            _windowStart.X + (int)(p.X - _dragStart.X),
-            _windowStart.Y + (int)(p.Y - _dragStart.Y)));
+        var p = e.GetCurrentPoint(_root).Position;
+
+        // Clamp fully on-screen: this bar is the only way to stop a take.
+        var x = Math.Min(Math.Max(_barStart.X + (p.X - _dragStart.X), 0),
+            Math.Max(0, _root.ActualWidth - _bar.ActualWidth));
+        var y = Math.Min(Math.Max(_barStart.Y + (p.Y - _dragStart.Y), 0),
+            Math.Max(0, _root.ActualHeight - _bar.ActualHeight));
+
+        Canvas.SetLeft(_bar, x);
+        Canvas.SetTop(_bar, y);
     }
 
-    private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
+    private void OnGripReleased(object sender, PointerRoutedEventArgs e)
     {
         _dragging = false;
         ((UIElement)sender).ReleasePointerCaptures();
