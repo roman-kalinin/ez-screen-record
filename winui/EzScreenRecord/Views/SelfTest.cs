@@ -162,58 +162,81 @@ internal static class SelfTest
         section("Annotation overlay");
         await breathe();
 
-        // The overlay is a Window, so it must be built on the UI thread.
-        var done = new TaskCompletionSource();
-        queue.TryEnqueue(() =>
+        LayeredOverlay? overlay = null;
+        try
         {
-            OverlayWindow? overlay = null;
-            try
-            {
-                overlay = new OverlayWindow(new AppSettings());
-                overlay.Activate();
-                var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(overlay);
+            overlay = new LayeredOverlay();
+            var hwnd = overlay.Handle;
 
-                check("WS_EX_LAYERED set", Win32.HasExStyle(hwnd, Win32.WS_EX_LAYERED));
-                check("WS_EX_TOOLWINDOW set (out of Alt-Tab)",
-                    Win32.HasExStyle(hwnd, Win32.WS_EX_TOOLWINDOW));
-                check("WS_EX_NOACTIVATE set (does not steal focus)",
-                    Win32.HasExStyle(hwnd, Win32.WS_EX_NOACTIVATE));
-                check("click-through by default",
-                    Win32.HasExStyle(hwnd, Win32.WS_EX_TRANSPARENT));
+            check("window created", hwnd != IntPtr.Zero);
+            check("WS_EX_LAYERED set", Win32.HasExStyle(hwnd, Win32.WS_EX_LAYERED));
+            check("WS_EX_TOOLWINDOW set (out of Alt-Tab)",
+                Win32.HasExStyle(hwnd, Win32.WS_EX_TOOLWINDOW));
+            check("WS_EX_NOACTIVATE set (does not steal focus)",
+                Win32.HasExStyle(hwnd, Win32.WS_EX_NOACTIVATE));
+            check("click-through by default",
+                Win32.HasExStyle(hwnd, Win32.WS_EX_TRANSPARENT));
 
-                overlay.SetInteractive(true);
-                check("interactive clears WS_EX_TRANSPARENT",
-                    !Win32.HasExStyle(hwnd, Win32.WS_EX_TRANSPARENT));
-                check("WS_EX_LAYERED survives the toggle",
-                    Win32.HasExStyle(hwnd, Win32.WS_EX_LAYERED));
+            overlay.SetClickThrough(false);
+            check("interactive clears WS_EX_TRANSPARENT",
+                !Win32.HasExStyle(hwnd, Win32.WS_EX_TRANSPARENT));
+            check("WS_EX_LAYERED survives the toggle",
+                Win32.HasExStyle(hwnd, Win32.WS_EX_LAYERED));
 
-                overlay.SetInteractive(false);
-                check("click-through restored",
-                    Win32.HasExStyle(hwnd, Win32.WS_EX_TRANSPARENT));
+            overlay.SetClickThrough(true);
+            check("click-through restored",
+                Win32.HasExStyle(hwnd, Win32.WS_EX_TRANSPARENT));
 
-                check("display affinity can be set", overlay.SetExcludedFromCapture(true));
-                check("display affinity can be cleared", overlay.SetExcludedFromCapture(false));
+            check("display affinity can be set", overlay.SetExcludedFromCapture(true));
+            check("display affinity can be cleared", overlay.SetExcludedFromCapture(false));
 
-                overlay.SetExcludedFromCapture(true);
-                overlay.SetInteractive(true);
-                Win32.GetWindowDisplayAffinity(hwnd, out var affinity);
-                check("display affinity survives SetInteractive(true)",
-                    affinity == Win32.WDA_EXCLUDEFROMCAPTURE);
-                overlay.SetExcludedFromCapture(false);
-            }
-            catch (Exception ex)
-            {
-                error($"overlay: {ex.Message}");
-            }
-            finally
-            {
-                try { overlay?.Close(); } catch { /* already gone */ }
-                done.SetResult();
-            }
-        });
-
-        await done.Task;
+            // THE check that matters, and the one whose absence let a fully
+            // opaque overlay pass every style test: sample real screen pixels
+            // and require more than one colour. A window that hides the desktop
+            // reads as a single flat colour everywhere.
+            await Task.Delay(250);
+            check("overlay is actually transparent (desktop shows through)",
+                DesktopIsVisibleThrough());
+        }
+        catch (Exception ex)
+        {
+            error($"overlay: {ex.Message}");
+        }
+        finally
+        {
+            overlay?.Dispose();
+        }
     }
+
+    /// <summary>
+    /// Sample the live screen in several places. If the overlay were opaque
+    /// every sample would return the same colour; a varied desktop showing
+    /// through gives several.
+    /// </summary>
+    private static bool DesktopIsVisibleThrough()
+    {
+        var dc = GetDC(IntPtr.Zero);
+        try
+        {
+            var seen = new HashSet<uint>();
+            foreach (var (x, y) in new[] { (300, 300), (900, 500), (1500, 800), (600, 1000) })
+                seen.Add(GetPixel(dc, x, y));
+            return seen.Count > 1;
+        }
+        finally
+        {
+            ReleaseDC(IntPtr.Zero, dc);
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr GetDC(IntPtr hwnd);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
+
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")]
+    private static extern uint GetPixel(IntPtr dc, int x, int y);
 
     // --- Hotkeys ------------------------------------------------------------
 

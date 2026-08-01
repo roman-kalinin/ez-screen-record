@@ -55,6 +55,14 @@ internal static partial class Win32
 
     // --- Display affinity ---------------------------------------------------
 
+    // --- Layered window attributes ------------------------------------------
+
+    /// <summary>Treat the given colour as fully transparent.</summary>
+    internal const uint LWA_COLORKEY = 0x00000001;
+
+    /// <summary>Apply a uniform alpha to the whole window.</summary>
+    internal const uint LWA_ALPHA = 0x00000002;
+
     /// <summary>Window is captured normally.</summary>
     internal const uint WDA_NONE = 0x00000000;
 
@@ -148,6 +156,62 @@ internal static partial class Win32
     [LibraryImport("dwmapi.dll")]
     internal static partial int DwmGetWindowAttribute(
         IntPtr hWnd, int attribute, out int value, int size);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MARGINS
+    {
+        public int Left;
+        public int Right;
+        public int Top;
+        public int Bottom;
+    }
+
+    /// <summary>
+    /// Extend the DWM frame into the client area. Passing -1 on all sides
+    /// ("sheet of glass") is what lets a window composite per-pixel alpha from
+    /// its own content; without it a transparent XAML background is still
+    /// presented onto an opaque surface and comes out black.
+    /// </summary>
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmExtendFrameIntoClientArea(IntPtr hWnd, ref MARGINS margins);
+
+    internal const int DWM_BB_ENABLE = 0x00000001;
+    internal const int DWM_BB_BLURREGION = 0x00000002;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct DWM_BLURBEHIND
+    {
+        public int dwFlags;
+        [MarshalAs(UnmanagedType.Bool)] public bool fEnable;
+        public IntPtr hRgnBlur;
+        [MarshalAs(UnmanagedType.Bool)] public bool fTransitionOnMaximized;
+    }
+
+    /// <summary>
+    /// Enable blur-behind with an EMPTY region.
+    ///
+    /// The blur is not the point -- an empty region means "blur nothing", but
+    /// enabling it switches the window's DWM composition to a mode that honours
+    /// per-pixel alpha from the content. This is the one mechanism that gives a
+    /// WinUI 3 window real transparency: SetLayeredWindowAttributes is ignored
+    /// because the XAML island composites through DWM rather than through the
+    /// layered-window path.
+    /// </summary>
+    [DllImport("dwmapi.dll")]
+    internal static extern int DwmEnableBlurBehindWindow(IntPtr hWnd, ref DWM_BLURBEHIND blurBehind);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateRectRgn(int left, int top, int right, int bottom);
+
+    [DllImport("gdi32.dll")]
+    internal static extern bool DeleteObject(IntPtr obj);
+
+    /// <summary>DWMWA_WINDOW_CORNER_PREFERENCE.</summary>
+    internal const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+
+    [DllImport("dwmapi.dll", EntryPoint = "DwmSetWindowAttribute")]
+    internal static extern int DwmSetWindowAttributeInt(
+        IntPtr hWnd, int attribute, ref int value, int size);
 
     [LibraryImport("user32.dll")]
     internal static partial uint GetDpiForWindow(IntPtr hWnd);

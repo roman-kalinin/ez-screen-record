@@ -308,28 +308,52 @@ public sealed partial class MainWindow
 
     // --- Drawing overlay ----------------------------------------------------
 
-    private OverlayWindow? _overlay;
+    // The drawing surface is a pure Win32 layered window; the palette is a
+    // separate small XAML window above it. See Interop/LayeredOverlay.cs for
+    // why WinUI cannot host the surface itself.
+    private LayeredOverlay? _overlay;
+    private PaletteWindow? _paletteWindow;
 
     private void ToggleDrawing()
     {
-        if (_overlay is null)
+        if (_overlay is not null)
         {
-            _overlay = new OverlayWindow(Settings);
-            _overlay.Dismissed += CloseOverlay;
-            _overlay.Activate();
-            _overlay.SetInteractive(true);
-            _toolbar?.SetDrawActive(true);
+            CloseOverlay();
             return;
         }
 
-        CloseOverlay();
+        _overlay = new LayeredOverlay { Draw = Settings.Draw };
+        _overlay.Dismissed += () => DispatcherQueue.TryEnqueue(CloseOverlay);
+        // Drawing means taking the mouse; click-through goes back on when the
+        // overlay closes.
+        _overlay.SetClickThrough(false);
+
+        _paletteWindow = new PaletteWindow(Settings);
+        _paletteWindow.ClearRequested += () => _overlay?.ClearAll();
+        _paletteWindow.DoneRequested += () => DispatcherQueue.TryEnqueue(CloseOverlay);
+        // The palette writes straight into Settings.Draw, which the overlay
+        // holds by reference, so a tool or colour change takes effect at once.
+        _paletteWindow.Changed += () => { if (_overlay is not null) _overlay.Draw = Settings.Draw; };
+        _paletteWindow.Activate();
+
+        // The palette is chrome, not content: keep it out of the video for the
+        // same reason as the toolbar.
+        if (Settings.Recording.HideToolbarFromCapture)
+            _paletteWindow.SetExcludedFromCapture(true);
+
+        _toolbar?.SetDrawActive(true);
     }
 
     private void CloseOverlay()
     {
-        if (_overlay is null) return;
-        _overlay.Close();
+        if (_overlay is null && _paletteWindow is null) return;
+
+        _overlay?.Dispose();
         _overlay = null;
+
+        _paletteWindow?.Close();
+        _paletteWindow = null;
+
         _toolbar?.SetDrawActive(false);
     }
 

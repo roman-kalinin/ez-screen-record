@@ -55,7 +55,8 @@ public sealed partial class MainWindow : Window
         Closed += (_, _) =>
         {
             _hotkeys?.Dispose();
-            _overlay?.Close();
+            _overlay?.Dispose();
+            _paletteWindow?.Close();
             _toolbar?.Close();
             _stage?.StopPreviews();
             Settings.Save();

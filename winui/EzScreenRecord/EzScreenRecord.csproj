@@ -26,6 +26,14 @@
     <!-- Win2D backs the compositor preview (Phase 3) and the annotation
          overlay's stroke rendering (Phase 4). -->
     <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.3.*" />
+    <!--
+      GDI+ for the annotation overlay. It renders into a 32-bit premultiplied
+      ARGB bitmap that UpdateLayeredWindow composites per pixel: the only way
+      to get a genuinely transparent desktop overlay, since a WinUI 3 window
+      stays opaque under every documented transparency approach. See
+      Interop/LayeredOverlay.cs.
+    -->
+    <PackageReference Include="System.Drawing.Common" Version="9.0.*" />
   </ItemGroup>
 
   <ItemGroup>

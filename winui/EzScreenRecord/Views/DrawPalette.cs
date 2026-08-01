@@ -108,7 +108,7 @@ public sealed class DrawPalette : UserControl
                 Width = 22,
                 Height = 22,
                 CornerRadius = new CornerRadius(11),
-                Background = new SolidColorBrush(Annotation.ParseColor(hex)),
+                Background = new SolidColorBrush(ParseColor(hex)),
                 BorderThickness = new Thickness(2),
                 BorderBrush = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
                 Tag = hex,
@@ -184,6 +184,23 @@ public sealed class DrawPalette : UserControl
         };
         ToolTipService.SetToolTip(button, tooltip);
         return button;
+    }
+
+    /// <summary>Parse a "#rrggbb" swatch, falling back to red.</summary>
+    private static Color ParseColor(string hex)
+    {
+        try
+        {
+            var s = hex.TrimStart('#');
+            return Color.FromArgb(255,
+                Convert.ToByte(s.Substring(0, 2), 16),
+                Convert.ToByte(s.Substring(2, 2), 16),
+                Convert.ToByte(s.Substring(4, 2), 16));
+        }
+        catch
+        {
+            return Color.FromArgb(255, 255, 59, 48);
+        }
     }
 
     private static Border Divider() => new()
