@@ -151,6 +151,37 @@ internal static class SelfTest
         check($"{mics.Count} microphone(s) found", mics.Count > 0);
         foreach (var m in mics) info(m);
         info($"{cams.Count} camera(s): {(cams.Count > 0 ? string.Join(", ", cams) : "none")}");
+
+        // MediaCapture is what the live preview uses, and it can fail where
+        // ffmpeg's dshow enumeration succeeds -- privacy settings, or another
+        // app holding the device. Worth separating the two.
+        if (cams.Count > 0)
+        {
+            string? error = null;
+            Windows.Media.Capture.MediaCapture? probe = null;
+            try
+            {
+                probe = new Windows.Media.Capture.MediaCapture();
+                await probe.InitializeAsync(
+                    new Windows.Media.Capture.MediaCaptureInitializationSettings
+                    {
+                        StreamingCaptureMode = Windows.Media.Capture.StreamingCaptureMode.Video,
+                        MemoryPreference =
+                            Windows.Media.Capture.MediaCaptureMemoryPreference.Cpu,
+                    });
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+            }
+            finally
+            {
+                try { probe?.Dispose(); } catch { /* already gone */ }
+            }
+
+            check("MediaCapture can open the webcam (live preview)", error is null);
+            if (error is not null) info(error);
+        }
     }
 
     // --- Overlay ------------------------------------------------------------

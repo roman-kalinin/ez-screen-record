@@ -39,7 +39,7 @@ public sealed class LayoutStageControl : UserControl
     private readonly TextBlock _placeholder;
     private readonly Canvas _canvas;
     private readonly Border _cameraBox;
-    private readonly MediaPlayerElement _cameraPreview;
+    private readonly Image _cameraImage;
     private readonly List<Rectangle> _anchors = [];
     private readonly StackPanel _shapeBar;
 
@@ -72,11 +72,16 @@ public sealed class LayoutStageControl : UserControl
             TextWrapping = TextWrapping.Wrap,
         };
 
-        _cameraPreview = new MediaPlayerElement { Stretch = Stretch.UniformToFill };
+        _cameraImage = new Image
+        {
+            Stretch = Stretch.UniformToFill,
+            Source = _cameraFrames,
+            Visibility = Visibility.Collapsed,
+        };
 
         _cameraBox = new Border
         {
-            Child = _cameraPreview,
+            Child = _cameraImage,
             Background = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255)),
             BorderBrush = new SolidColorBrush(Color.FromArgb(220, 10, 132, 255)),
             BorderThickness = new Thickness(1.5),
@@ -172,7 +177,6 @@ public sealed class LayoutStageControl : UserControl
             Orientation = Orientation.Horizontal,
             Spacing = 2,
             Padding = new Thickness(3),
-            Visibility = Visibility.Collapsed,
         };
 
         void Add(string glyph, string tip, Func<bool> isActive, Action onClick)
@@ -224,7 +228,8 @@ public sealed class LayoutStageControl : UserControl
             CornerRadius = new CornerRadius(6),
         };
         host.Children.Add(wrapper);
-        host.Visibility = Visibility.Collapsed;
+        // Visibility is driven by Layout(), which shows the bar whenever the
+        // camera overlay is enabled.
         return host;
     }
 
@@ -370,24 +375,105 @@ public sealed class LayoutStageControl : UserControl
                 }
             }
 
-            if (source is not null)
+            if (source is null)
             {
-                _cameraPreview.Source =
-                    Windows.Media.Core.MediaSource.CreateFromMediaFrameSource(source);
-                _cameraPreview.AutoPlay = true;
+                LastCameraError = "The camera reported no video frame source.";
+                StopCamera();
+                return;
             }
+
+            // A MediaFrameReader painting into a SoftwareBitmapSource, rather
+            // than MediaPlayerElement + MediaSource.CreateFromMediaFrameSource.
+            // The latter is the documented shape but silently renders nothing
+            // here: the element stays blank while MediaCapture itself opens the
+            // device without error. Reading frames explicitly is dependable and
+            // also lets the preview be throttled.
+            _frameReader = await _capture.CreateFrameReaderAsync(
+                source, Windows.Media.MediaProperties.MediaEncodingSubtypes.Bgra8);
+            _frameReader.FrameArrived += OnCameraFrame;
+            await _frameReader.StartAsync();
         }
-        catch
+        catch (Exception ex)
         {
-            // No camera, or another app holds it. The box stays as an outline
-            // rather than taking the app down.
+            // No camera, or another app holds it exclusively. The box stays as
+            // an outline rather than taking the app down -- but the reason is
+            // recorded, because a silently empty camera box is impossible to
+            // tell apart from one that is merely still starting.
+            LastCameraError = ex.Message;
             StopCamera();
         }
     }
 
+    /// <summary>Why the camera preview is not showing, if it is not.</summary>
+    public string? LastCameraError { get; private set; }
+
+    private Windows.Media.Capture.Frames.MediaFrameReader? _frameReader;
+    private readonly Microsoft.UI.Xaml.Media.Imaging.SoftwareBitmapSource _cameraFrames = new();
+    private bool _frameBusy;
+
+    /// <summary>
+    /// Copy the newest camera frame into the preview.
+    ///
+    /// Frames arrive on a worker thread at the camera's native rate; drawing is
+    /// marshalled to the UI thread and DROPPED while a previous frame is still
+    /// being handed over. A preview only has to show where the camera sits, so
+    /// falling behind is never worth queueing for.
+    /// </summary>
+    private void OnCameraFrame(
+        Windows.Media.Capture.Frames.MediaFrameReader sender, object args)
+    {
+        if (_frameBusy) return;
+
+        using var frame = sender.TryAcquireLatestFrame();
+        var bitmap = frame?.VideoMediaFrame?.SoftwareBitmap;
+        if (bitmap is null) return;
+
+        // SoftwareBitmapSource requires BGRA8 premultiplied; the camera may
+        // hand back something else.
+        var converted = bitmap.BitmapPixelFormat == Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8
+            && bitmap.BitmapAlphaMode == Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied
+                ? bitmap
+                : Windows.Graphics.Imaging.SoftwareBitmap.Convert(
+                    bitmap,
+                    Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
+                    Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied);
+
+        _frameBusy = true;
+        var queued = DispatcherQueue.TryEnqueue(async () =>
+        {
+            try
+            {
+                await _cameraFrames.SetBitmapAsync(converted);
+                _cameraImage.Visibility = Visibility.Visible;
+            }
+            catch
+            {
+                // The window closed mid-frame.
+            }
+            finally
+            {
+                _frameBusy = false;
+            }
+        });
+
+        if (!queued) _frameBusy = false;
+    }
+
     private void StopCamera()
     {
-        try { _cameraPreview.Source = null; } catch { /* already torn down */ }
+        try { _cameraImage.Visibility = Visibility.Collapsed; } catch { /* already torn down */ }
+
+        // Stop the reader before disposing the capture: a reader still
+        // delivering frames from a disposed MediaCapture throws on the frame
+        // thread, where nothing can catch it.
+        if (_frameReader is not null)
+        {
+            _frameReader.FrameArrived -= OnCameraFrame;
+            try { _frameReader.StopAsync().AsTask().Wait(500); } catch { /* already stopping */ }
+            try { _frameReader.Dispose(); } catch { /* already gone */ }
+            _frameReader = null;
+        }
+
         try { _capture?.Dispose(); } catch { /* already gone */ }
         _capture = null;
     }
@@ -424,8 +510,8 @@ public sealed class LayoutStageControl : UserControl
 
         // Mirroring is what the recording does, so the preview must match or
         // the layout is a lie.
-        _cameraPreview.RenderTransformOrigin = new Point(0.5, 0.5);
-        _cameraPreview.RenderTransform = _camera.Mirrored
+        _cameraImage.RenderTransformOrigin = new Point(0.5, 0.5);
+        _cameraImage.RenderTransform = _camera.Mirrored
             ? new ScaleTransform { ScaleX = -1 }
             : null;
 
