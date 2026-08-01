@@ -84,8 +84,12 @@
             <StackPanel Spacing="10" VerticalAlignment="Center">
                 <ContentPresenter x:Name="StageHost" HorizontalAlignment="Stretch" />
 
-                <!-- Image overlays. Only rendered when there are any. -->
-                <ItemsControl x:Name="ImageList" Visibility="Collapsed" />
+                <!-- Image overlays. Only rendered when there are any: an empty
+                     list is just noise above the stage. -->
+                <ItemsControl x:Name="ImageList"
+                              Visibility="Collapsed"
+                              MaxWidth="640"
+                              HorizontalAlignment="Center" />
             </StackPanel>
         </ScrollViewer>
 

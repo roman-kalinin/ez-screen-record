@@ -93,6 +93,7 @@ public sealed partial class SourceDialog : ContentDialog
         LoadingRing.IsActive = true;
         SourceGrid.Visibility = Visibility.Collapsed;
         EmptyMessage.Visibility = Visibility.Collapsed;
+        MinimizedHint.Visibility = Visibility.Collapsed;
         _cards.Clear();
         Selected = null;
         IsPrimaryButtonEnabled = false;
@@ -140,6 +141,11 @@ public sealed partial class SourceDialog : ContentDialog
         }
 
         SourceGrid.Visibility = Visibility.Visible;
+
+        // Explain the preview-less cards, but only when there are any.
+        MinimizedHint.Visibility = _cards.Any(c => c.Choice.Minimized)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
 
         // Fill thumbnails in the background so the grid is interactive at once.
         foreach (var card in _cards.ToList())

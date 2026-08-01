@@ -12,6 +12,7 @@
     <Grid Width="760" Height="520" RowSpacing="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -37,14 +38,25 @@
             </Button>
         </Grid>
 
+        <!-- Only shown on the Windows tab when something is minimized: a card
+             with no preview needs explaining, and picking one has a visible
+             side effect (the window reopens). -->
+        <TextBlock x:Name="MinimizedHint"
+                   Grid.Row="1"
+                   Visibility="Collapsed"
+                   TextWrapping="Wrap"
+                   FontSize="12"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                   Text="Minimized windows are listed without a preview. Picking one reopens it, since Windows can't record a minimized window." />
+
         <ProgressRing x:Name="LoadingRing"
-                      Grid.Row="1"
+                      Grid.Row="2"
                       IsActive="True"
                       HorizontalAlignment="Center"
                       VerticalAlignment="Center" />
 
         <TextBlock x:Name="EmptyMessage"
-                   Grid.Row="1"
+                   Grid.Row="2"
                    Visibility="Collapsed"
                    HorizontalAlignment="Center"
                    VerticalAlignment="Center"
@@ -55,7 +67,7 @@
                    Style="{StaticResource BodyTextBlockStyle}" />
 
         <GridView x:Name="SourceGrid"
-                  Grid.Row="1"
+                  Grid.Row="2"
                   SelectionMode="Single"
                   IsItemClickEnabled="True"
                   ItemClick="OnItemClick"

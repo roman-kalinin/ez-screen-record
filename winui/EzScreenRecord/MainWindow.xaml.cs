@@ -49,6 +49,7 @@ public sealed partial class MainWindow : Window
 
         BuildStage();
         BuildControlBar();
+        RefreshImageList();
         SetupHotkeys();
         _ = RestoreSourceAsync();
 

@@ -3,7 +3,9 @@ using EzScreenRecord.Interop;
 using EzScreenRecord.Models;
 using EzScreenRecord.Views;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using DispatcherTimer = Microsoft.UI.Xaml.DispatcherTimer;
 
 namespace EzScreenRecord;
@@ -81,6 +83,104 @@ public sealed partial class MainWindow
         while (Settings.Images.Count > 12) Settings.Images.RemoveAt(0);
 
         Settings.Save();
+        RefreshImageList();
+    }
+
+    /// <summary>
+    /// One row per image overlay: thumbnail, name, a visibility switch and a
+    /// remove button. Only rendered when there are images, matching Electron —
+    /// an empty list is just noise above the stage.
+    /// </summary>
+    private void RefreshImageList()
+    {
+        ImageList.Items.Clear();
+
+        if (Settings.Images.Count == 0)
+        {
+            ImageList.Visibility = Visibility.Collapsed;
+            _stage?.SetImages(Settings.Images);
+            return;
+        }
+
+        foreach (var image in Settings.Images.ToList())
+        {
+            var row = new Grid
+            {
+                ColumnSpacing = 8,
+                Padding = new Thickness(6),
+                Background = (Brush)Application.Current.Resources["CardBackgroundFillColorDefaultBrush"],
+                CornerRadius = new CornerRadius(4),
+                Margin = new Thickness(0, 0, 0, 6),
+            };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var thumb = new Image
+            {
+                Width = 40,
+                Height = 28,
+                Stretch = Stretch.UniformToFill,
+            };
+            try
+            {
+                thumb.Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(
+                    new Uri(image.FilePath));
+            }
+            catch
+            {
+                // The file moved or was deleted; the row still lets it be removed.
+            }
+            row.Children.Add(thumb);
+
+            var name = new TextBlock
+            {
+                Text = image.Name,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+            };
+            ToolTipService.SetToolTip(name, image.FilePath);
+            Grid.SetColumn(name, 1);
+            row.Children.Add(name);
+
+            var visible = new ToggleSwitch
+            {
+                IsOn = image.Visible,
+                OnContent = null,
+                OffContent = null,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            ToolTipService.SetToolTip(visible, "Visible");
+            visible.Toggled += (_, _) =>
+            {
+                image.Visible = visible.IsOn;
+                Settings.Save();
+                _stage?.SetImages(Settings.Images);
+            };
+            Grid.SetColumn(visible, 2);
+            row.Children.Add(visible);
+
+            var remove = new Button
+            {
+                Content = new FontIcon { Glyph = Glyphs.Delete, FontSize = 14 },
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            ToolTipService.SetToolTip(remove, "Remove");
+            AutomationProperties.SetName(remove, $"Remove {image.Name}");
+            remove.Click += (_, _) =>
+            {
+                Settings.Images.Remove(image);
+                Settings.Save();
+                RefreshImageList();
+            };
+            Grid.SetColumn(remove, 3);
+            row.Children.Add(remove);
+
+            ImageList.Items.Add(row);
+        }
+
+        ImageList.Visibility = Visibility.Visible;
         _stage?.SetImages(Settings.Images);
     }
 

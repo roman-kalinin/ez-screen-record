@@ -65,7 +65,14 @@ foreach ($prop in @(
             "toggled: $Click"
             return
         }
-        throw "Found '$Click' but it supports neither Invoke nor Toggle"
+        # Tabs and list items: SelectorBarItem exposes SelectionItem, not Invoke.
+        if ($el.TryGetCurrentPattern(
+                [System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
+            $pattern.Select()
+            "selected: $Click"
+            return
+        }
+        throw "Found '$Click' but it supports none of Invoke, Toggle, SelectionItem"
     }
 }
 
