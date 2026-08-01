@@ -197,6 +197,12 @@ make distclean >/dev/null 2>&1 || true
 # where the 138 MB -> ~20 MB comes from; the enable list below IS the app's
 # real dependency surface, so anything added to the ffmpeg command line in
 # native-recorder.ts must be added here too or it will fail at record time.
+#
+# NOTE the lavfi entries. ddagrab is a FILTER, but the recorder reaches it as
+# `-f lavfi -i ddagrab=...`, so the lavfi input device and demuxer are needed
+# too. Enabling the filter alone builds and lists ddagrab happily, then fails at
+# record time with "Error opening input file ddagrab=..." -- which reads like a
+# broken filter rather than a missing device.
 ./configure \
   --prefix="$PREFIX" \
   --pkg-config=pkg-config \
@@ -228,6 +234,8 @@ make distclean >/dev/null 2>&1 || true
   \
   --enable-indev=dshow \
   --enable-indev=gdigrab \
+  --enable-indev=lavfi \
+  --enable-demuxer=lavfi \
   --enable-filter=ddagrab \
   --enable-filter=libplacebo \
   --enable-filter=hwupload \

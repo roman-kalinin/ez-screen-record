@@ -123,9 +123,20 @@ public sealed class CameraBubbleWindow : Window
                 MemoryPreference = MediaCaptureMemoryPreference.Cpu,
             });
 
-            var source = _capture.FrameSources.Values
-                .FirstOrDefault(s => s.Info.MediaStreamType == MediaStreamType.VideoPreview)
-                ?? _capture.FrameSources.Values.FirstOrDefault();
+            // Explicit iteration, not LINQ: WinRT collection projections cannot
+            // always be enumerated by LINQ and throw
+            // InvalidCastException("No such interface supported") from inside
+            // the projection when they cannot.
+            Windows.Media.Capture.Frames.MediaFrameSource? source = null;
+            foreach (var candidate in _capture.FrameSources)
+            {
+                source ??= candidate.Value;
+                if (candidate.Value.Info.MediaStreamType == MediaStreamType.VideoPreview)
+                {
+                    source = candidate.Value;
+                    break;
+                }
+            }
 
             if (source is not null)
             {

@@ -24,6 +24,17 @@ public partial class App : Application
     {
         Settings = AppSettings.Load();
 
+        // A self-test harness for the overlay, which is the riskiest piece of
+        // the port: transparent click-through windows are a known WinUI 3 weak
+        // spot, and the failure modes (a black rectangle over the desktop, or a
+        // window that swallows every click) are far easier to diagnose in
+        // isolation than inside the running app.
+        if (Environment.GetCommandLineArgs().Contains("--overlay-selftest"))
+        {
+            Views.OverlaySelfTest.Run();
+            return;
+        }
+
         Main = new MainWindow();
         Main.Activate();
     }
