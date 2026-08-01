@@ -63,6 +63,19 @@ public sealed class PaletteWindow : Window
         => AppWindow.Move(new PointInt32((int)p.X, (int)p.Y));
 
     /// <summary>
+    /// Raise above the drawing overlay. Both windows are topmost and the
+    /// overlay covers the entire desktop, so whichever was made topmost last
+    /// wins — the palette has to be re-asserted after the overlay appears or it
+    /// sits underneath and cannot be clicked.
+    /// </summary>
+    public void BringToFront()
+    {
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        Win32.SetWindowPos(hwnd, Win32.HWND_TOPMOST, 0, 0, 0, 0,
+            Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE);
+    }
+
+    /// <summary>
     /// Keep the palette out of the recording, like the toolbar.
     ///
     /// Deliberately does NOT add WS_EX_LAYERED first. On a WinUI window that

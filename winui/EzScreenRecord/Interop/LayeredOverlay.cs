@@ -47,11 +47,50 @@ public sealed class LayeredOverlay : IDisposable
 
     public IntPtr Handle => _hwnd;
 
+    private Thread? _thread;
+    private uint _threadId;
+    private readonly ManualResetEventSlim _ready = new(false);
+
+    /// <summary>
+    /// Create the overlay on its OWN thread, with its own message pump.
+    ///
+    /// This is not optional. Created on the XAML UI thread, the window belongs
+    /// to WinUI's message loop, which dispatches into the DispatcherQueue and
+    /// never calls a raw WndProc -- so WM_LBUTTONDOWN and friends are simply
+    /// never delivered and nothing can be drawn. The window looks perfectly
+    /// healthy from the outside: right position, right styles, visible, and
+    /// completely inert.
+    /// </summary>
     public LayeredOverlay()
     {
         _wndProc = WindowProc;
-        CreateWindow();
-        Redraw();
+
+        _thread = new Thread(() =>
+        {
+            _threadId = GetCurrentThreadId();
+            CreateWindow();
+            Redraw();
+            _ready.Set();
+
+            // Classic pump. Ends when PostQuitMessage runs on Dispose.
+            while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
+            {
+                TranslateMessage(ref msg);
+                DispatchMessage(ref msg);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "EzOverlay",
+        };
+
+        // STA: the overlay shares a process with XAML and COM, and a window
+        // thread should be single-threaded apartment regardless.
+        _thread.SetApartmentState(ApartmentState.STA);
+        _thread.Start();
+
+        // Wait for the window to exist so callers can use Handle immediately.
+        _ready.Wait(TimeSpan.FromSeconds(5));
     }
 
     // --- Window creation ----------------------------------------------------
@@ -91,6 +130,14 @@ public sealed class LayeredOverlay : IDisposable
             IntPtr.Zero, IntPtr.Zero, wc.hInstance, IntPtr.Zero);
 
         ShowWindow(_hwnd, 5 /* SW_SHOW */);
+
+        // Force topmost AFTER showing. WS_EX_TOPMOST at creation is not enough
+        // on its own -- the window ended up below other topmost windows, so
+        // WindowFromPoint returned whatever was underneath and clicks never
+        // reached the overlay at all.
+        Win32.SetWindowPos(_hwnd, Win32.HWND_TOPMOST, 0, 0, 0, 0,
+            Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_SHOWWINDOW);
+
         SetForegroundWindow(_hwnd);
         SetFocus(_hwnd);
 
@@ -116,6 +163,10 @@ public sealed class LayeredOverlay : IDisposable
         // it here would both break the alpha and silently clear any display
         // affinity set on this window.
         Win32.AddExStyle(_hwnd, Win32.WS_EX_LAYERED);
+
+        // Repaint: the base layer's alpha depends on the mode, so the surface
+        // has to be pushed again for the hit test to follow.
+        RequestRedraw();
     }
 
     public bool IsInteractive => _interactive;
@@ -136,8 +187,16 @@ public sealed class LayeredOverlay : IDisposable
         using var bitmap = new Bitmap(_width, _height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(bitmap))
         {
-            // Fully transparent everywhere that is not drawn on.
-            g.Clear(Color.Transparent);
+            // Alpha 1, not 0.
+            //
+            // A layered window is hit-tested per pixel: WindowFromPoint skips
+            // anything with alpha 0, so a genuinely empty surface cannot be
+            // clicked at all. Every style read back correctly (topmost, not
+            // transparent, layered, full-screen) while clicks still landed on
+            // the window underneath, because there was nothing solid to hit.
+            //
+            // Alpha 1/255 is invisible to the eye but present to the hit test.
+            g.Clear(_interactive ? Color.FromArgb(1, 0, 0, 0) : Color.Transparent);
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
 
@@ -147,6 +206,16 @@ public sealed class LayeredOverlay : IDisposable
 
         PushBitmap(bitmap);
     }
+
+    /// <summary>
+    /// Diagnostics for the self-test and for debugging a silent overlay: how
+    /// many times the surface was pushed, and whether the last push succeeded.
+    /// A window that is visible with correct styles but never painted looks
+    /// identical to a broken one from the outside.
+    /// </summary>
+    public int PushCount { get; private set; }
+    public bool LastPushOk { get; private set; }
+    public int LastPushError { get; private set; }
 
     private void PushBitmap(Bitmap bitmap)
     {
@@ -174,8 +243,10 @@ public sealed class LayeredOverlay : IDisposable
                 AlphaFormat = AC_SRC_ALPHA,
             };
 
-            UpdateLayeredWindow(_hwnd, screenDc, ref dest, ref size,
+            LastPushOk = UpdateLayeredWindow(_hwnd, screenDc, ref dest, ref size,
                 memDc, ref source, 0, ref blend, ULW_ALPHA);
+            LastPushError = LastPushOk ? 0 : Marshal.GetLastWin32Error();
+            PushCount++;
         }
         finally
         {
@@ -320,6 +391,18 @@ public sealed class LayeredOverlay : IDisposable
             case WM_KEYDOWN:
                 if (OnKeyDown((int)wParam.ToInt64())) return IntPtr.Zero;
                 break;
+
+            case WM_USER_REDRAW:
+                Redraw();
+                return IntPtr.Zero;
+
+            case WM_CLOSE:
+                DestroyWindow(hwnd);
+                return IntPtr.Zero;
+
+            case WM_DESTROY:
+                PostQuitMessage(0);
+                return IntPtr.Zero;
         }
 
         return DefWindowProc(hwnd, msg, wParam, lParam);
@@ -436,7 +519,7 @@ public sealed class LayeredOverlay : IDisposable
     {
         if (_strokes.Count == 0) return;
         _strokes.RemoveAt(_strokes.Count - 1);
-        Redraw();
+        RequestRedraw();
     }
 
     public void ClearAll()
@@ -444,8 +527,60 @@ public sealed class LayeredOverlay : IDisposable
         if (_strokes.Count == 0 && _current is null) return;
         _strokes.Clear();
         _current = null;
-        Redraw();
+        RequestRedraw();
     }
+
+    /// <summary>
+    /// Repaint from any thread. The palette lives on the UI thread, so its
+    /// Clear button would otherwise call UpdateLayeredWindow from the wrong
+    /// thread; posting a message hands the work back to the overlay's pump.
+    /// </summary>
+    private void RequestRedraw()
+    {
+        if (_hwnd == IntPtr.Zero) return;
+        PostMessage(_hwnd, WM_USER_REDRAW, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    /// <summary>
+    /// Inject a stroke without any input, so the self-test can verify the
+    /// paint-and-composite path end to end rather than only the window styles.
+    /// </summary>
+    public void DebugDrawTestStroke()
+    {
+        var stroke = new Stroke { Tool = DrawTool.Pen, Color = "#ff3b30", Width = 10 };
+        for (var i = 0; i < 40; i++)
+            stroke.Points.Add(new Point(DebugStrokeX + i * 10, DebugStrokeY));
+
+        _strokes.Add(stroke);
+        RequestRedraw();
+    }
+
+    private const int DebugStrokeX = 500;
+    private const int DebugStrokeY = 400;
+
+    /// <summary>Are the test stroke's pixels actually on screen?</summary>
+    public bool DebugStrokeIsVisible()
+    {
+        var dc = GetDC(IntPtr.Zero);
+        try
+        {
+            for (var i = 0; i < 40; i++)
+            {
+                var c = GetPixelNative(dc, DebugStrokeX + i * 10, DebugStrokeY);
+                var r = c & 0xFF;
+                var g = (c >> 8) & 0xFF;
+                if (r > 150 && g < 100) return true;
+            }
+            return false;
+        }
+        finally
+        {
+            ReleaseDC(IntPtr.Zero, dc);
+        }
+    }
+
+    [DllImport("gdi32.dll", EntryPoint = "GetPixel")]
+    private static extern uint GetPixelNative(IntPtr dc, int x, int y);
 
     /// <summary>Keep the overlay out of every screen capture, or allow it in.</summary>
     public bool SetExcludedFromCapture(bool excluded)
@@ -462,11 +597,16 @@ public sealed class LayeredOverlay : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        if (_hwnd != IntPtr.Zero)
-        {
-            DestroyWindow(_hwnd);
-            _hwnd = IntPtr.Zero;
-        }
+        // Tear the window down ON ITS OWN THREAD. DestroyWindow called from
+        // another thread is a no-op, which is how a "closed" overlay stayed on
+        // screen as an opaque sheet after a recording.
+        if (_hwnd != IntPtr.Zero) PostMessage(_hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+        if (_threadId != 0) PostThreadMessage(_threadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
+
+        _thread?.Join(TimeSpan.FromSeconds(2));
+        _thread = null;
+        _hwnd = IntPtr.Zero;
+        _ready.Dispose();
     }
 
     // --- Interop ------------------------------------------------------------
@@ -477,7 +617,43 @@ public sealed class LayeredOverlay : IDisposable
     private const uint WM_LBUTTONUP = 0x0202;
     private const uint WM_MOUSEMOVE = 0x0200;
     private const uint WM_KEYDOWN = 0x0100;
+    private const uint WM_CLOSE = 0x0010;
+    private const uint WM_DESTROY = 0x0002;
+    private const uint WM_QUIT = 0x0012;
+    private const uint WM_USER_REDRAW = 0x0400 + 1;
     private const long MK_LBUTTON = 0x0001;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSG
+    {
+        public IntPtr hwnd;
+        public uint message;
+        public IntPtr wParam;
+        public IntPtr lParam;
+        public uint time;
+        public POINT pt;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern int GetMessage(out MSG msg, IntPtr hwnd, uint min, uint max);
+
+    [DllImport("user32.dll")]
+    private static extern bool TranslateMessage(ref MSG msg);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr DispatchMessage(ref MSG msg);
+
+    [DllImport("user32.dll")]
+    private static extern void PostQuitMessage(int code);
+
+    [DllImport("user32.dll")]
+    private static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
+
+    [DllImport("user32.dll")]
+    private static extern bool PostThreadMessage(uint threadId, uint msg, IntPtr w, IntPtr l);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
 
     private const int SM_XVIRTUALSCREEN = 76;
     private const int SM_YVIRTUALSCREEN = 77;
@@ -546,7 +722,7 @@ public sealed class LayeredOverlay : IDisposable
     [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", SetLastError = true)]
     private static extern bool UpdateLayeredWindow(
         IntPtr hwnd, IntPtr dstDc, ref POINT dstPoint, ref SIZE size,
         IntPtr srcDc, ref POINT srcPoint, uint colorKey,

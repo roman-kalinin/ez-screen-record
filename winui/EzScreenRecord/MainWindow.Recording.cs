@@ -336,6 +336,11 @@ public sealed partial class MainWindow
         _paletteWindow.Changed += () => { if (_overlay is not null) _overlay.Draw = Settings.Draw; };
         _paletteWindow.Activate();
 
+        // Raise the palette above the overlay. Both are topmost and the overlay
+        // covers the whole desktop, so without this the palette is behind it
+        // and cannot be clicked.
+        _paletteWindow.BringToFront();
+
         // The palette is chrome, not content: keep it out of the video for the
         // same reason as the toolbar.
         if (Settings.Recording.HideToolbarFromCapture)

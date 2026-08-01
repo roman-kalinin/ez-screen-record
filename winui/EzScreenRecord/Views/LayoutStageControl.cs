@@ -119,6 +119,17 @@ public sealed class LayoutStageControl : UserControl
         _root.Children.Add(HintChip());
 
         _root.SizeChanged += (_, _) => Layout();
+
+        Loaded += async (_, _) =>
+        {
+            Layout();
+            if (_pendingCameraStart)
+            {
+                _pendingCameraStart = false;
+                await StartCameraAsync();
+            }
+        };
+
         PointerMoved += OnPointerMoved;
         PointerReleased += OnPointerReleased;
         PointerCaptureLost += OnPointerReleased;
@@ -238,8 +249,25 @@ public sealed class LayoutStageControl : UserControl
         _camera = camera;
         RefreshShapeBar();
         Layout();
-        _ = camera.Enabled ? StartCameraAsync() : Task.Run(StopCamera);
+
+        if (!camera.Enabled)
+        {
+            StopCamera();
+            return;
+        }
+
+        // Defer until the control is in the visual tree.
+        //
+        // SetCamera is called from the window's constructor, and a
+        // MediaPlayerElement that is not yet loaded silently refuses to attach
+        // a source -- so the preview stayed an empty outline until the user
+        // toggled the camera off and on again, which happened to run this after
+        // Loaded had fired.
+        if (IsLoaded) _ = StartCameraAsync();
+        else _pendingCameraStart = true;
     }
+
+    private bool _pendingCameraStart;
 
     public void SetImages(IReadOnlyList<ImageOverlay> images)
     {

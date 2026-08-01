@@ -44,7 +44,7 @@ internal static class SelfTest
             {
                 await RunSources(Section, Info, Check, Error, Breathe);
                 await RunFfmpeg(Section, Info, Check, Breathe);
-                await RunOverlay(queue, Section, Check, Error, Breathe);
+                await RunOverlay(queue, Section, Info, Check, Error, Breathe);
                 await RunHotkeys(Section, Info, Check, Breathe);
             }
             catch (Exception ex)
@@ -156,7 +156,7 @@ internal static class SelfTest
     // --- Overlay ------------------------------------------------------------
 
     private static async Task RunOverlay(
-        DispatcherQueue queue, Action<string> section,
+        DispatcherQueue queue, Action<string> section, Action<string> info,
         Action<string, bool> check, Action<string> error, Func<Task> breathe)
     {
         section("Annotation overlay");
@@ -172,13 +172,12 @@ internal static class SelfTest
             check("WS_EX_LAYERED set", Win32.HasExStyle(hwnd, Win32.WS_EX_LAYERED));
             check("WS_EX_TOOLWINDOW set (out of Alt-Tab)",
                 Win32.HasExStyle(hwnd, Win32.WS_EX_TOOLWINDOW));
-            check("WS_EX_NOACTIVATE set (does not steal focus)",
-                Win32.HasExStyle(hwnd, Win32.WS_EX_NOACTIVATE));
-            check("click-through by default",
-                Win32.HasExStyle(hwnd, Win32.WS_EX_TRANSPARENT));
-
-            overlay.SetClickThrough(false);
-            check("interactive clears WS_EX_TRANSPARENT",
+            // Deliberately NOT NOACTIVATE and NOT click-through: the overlay
+            // only exists while the user is drawing, so it must take focus for
+            // the tool keys and accept the mouse from the first stroke.
+            check("takes focus (needed for tool keys)",
+                !Win32.HasExStyle(hwnd, Win32.WS_EX_NOACTIVATE));
+            check("interactive from the start",
                 !Win32.HasExStyle(hwnd, Win32.WS_EX_TRANSPARENT));
             check("WS_EX_LAYERED survives the toggle",
                 Win32.HasExStyle(hwnd, Win32.WS_EX_LAYERED));
@@ -190,11 +189,24 @@ internal static class SelfTest
             check("display affinity can be set", overlay.SetExcludedFromCapture(true));
             check("display affinity can be cleared", overlay.SetExcludedFromCapture(false));
 
-            // THE check that matters, and the one whose absence let a fully
-            // opaque overlay pass every style test: sample real screen pixels
-            // and require more than one colour. A window that hides the desktop
-            // reads as a single flat colour everywhere.
-            await Task.Delay(250);
+            // Did the surface actually get pushed? A visible window with the
+            // right styles that was never painted is indistinguishable from a
+            // working one until you ask.
+            await Task.Delay(400);
+            info($"UpdateLayeredWindow calls: {overlay.PushCount}");
+            check("surface painted at least once", overlay.PushCount > 0);
+            check("last UpdateLayeredWindow succeeded", overlay.LastPushOk);
+            if (!overlay.LastPushOk) info($"last error: {overlay.LastPushError}");
+
+            // Draw a stroke programmatically and look for its pixels on screen.
+            // This is the end-to-end check: paint, composite, and be visible.
+            overlay.DebugDrawTestStroke();
+            await Task.Delay(400);
+            check("a drawn stroke is visible on screen", overlay.DebugStrokeIsVisible());
+
+            // THE check whose absence let a fully opaque overlay pass every
+            // style test: sample real screen pixels and require more than one
+            // colour. A window hiding the desktop reads as one flat colour.
             check("overlay is actually transparent (desktop shows through)",
                 DesktopIsVisibleThrough());
         }
