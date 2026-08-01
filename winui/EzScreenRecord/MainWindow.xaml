@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="EzScreenRecord.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!--
+            Custom title bar. The window is set to ExtendsContentIntoTitleBar,
+            so this Grid IS the caption area; SetTitleBar() in the code-behind
+            tells the system which part is draggable.
+        -->
+        <Grid x:Name="AppTitleBar"
+              Grid.Row="0"
+              Height="{StaticResource TitleBarHeight}"
+              ColumnSpacing="{StaticResource GapM}"
+              Padding="16,0,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <FontIcon Grid.Column="0"
+                      Glyph="&#xE714;"
+                      FontSize="16"
+                      Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                      VerticalAlignment="Center" />
+
+            <TextBlock Grid.Column="1"
+                       Text="Ez Screen Record"
+                       Style="{StaticResource CaptionTextBlockStyle}"
+                       VerticalAlignment="Center" />
+        </Grid>
+
+        <!-- Main content -->
+        <ScrollViewer Grid.Row="1" Padding="{StaticResource PagePadding}">
+            <StackPanel Spacing="{StaticResource GapL}" MaxWidth="900">
+
+                <!-- Source selection -->
+                <Border Style="{StaticResource CardStyle}">
+                    <Grid ColumnSpacing="{StaticResource GapM}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0"
+                                Width="96" Height="54"
+                                CornerRadius="4"
+                                Background="{ThemeResource ControlAltFillColorSecondaryBrush}">
+                            <Image x:Name="SourceThumb" Stretch="UniformToFill" />
+                        </Border>
+
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                            <TextBlock Text="Capture source"
+                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="SourceLabel"
+                                       Text="No source selected"
+                                       Style="{StaticResource BodyStrongTextBlockStyle}"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+
+                        <Button Grid.Column="2"
+                                Content="Choose…"
+                                VerticalAlignment="Center"
+                                Click="OnChooseSource" />
+                    </Grid>
+                </Border>
+
+                <!-- Recording options -->
+                <Border Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="{StaticResource GapM}">
+                        <TextBlock Text="Recording" Style="{StaticResource BodyStrongTextBlockStyle}" />
+
+                        <Grid ColumnSpacing="{StaticResource GapM}" RowSpacing="{StaticResource GapM}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <ComboBox x:Name="FpsBox"
+                                      Grid.Column="0"
+                                      Header="Frame rate"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="OnFpsChanged" />
+
+                            <ComboBox x:Name="ResolutionBox"
+                                      Grid.Column="1"
+                                      Header="Resolution"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="OnResolutionChanged" />
+
+                            <ComboBox x:Name="QualityBox"
+                                      Grid.Column="2"
+                                      Header="Quality"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="OnQualityChanged" />
+                        </Grid>
+
+                        <ComboBox x:Name="MicBox"
+                                  Header="Microphone"
+                                  HorizontalAlignment="Stretch"
+                                  SelectionChanged="OnMicChanged" />
+                    </StackPanel>
+                </Border>
+
+                <!-- Output -->
+                <Border Style="{StaticResource CardStyle}">
+                    <Grid ColumnSpacing="{StaticResource GapM}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                            <TextBlock Text="Save recordings to"
+                                       Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="OutputDirLabel"
+                                       Style="{StaticResource BodyTextBlockStyle}"
+                                       TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+
+                        <Button Grid.Column="1"
+                                Content="Change…"
+                                VerticalAlignment="Center"
+                                Click="OnChooseOutputDir" />
+                    </Grid>
+                </Border>
+
+                <InfoBar x:Name="StatusBar"
+                         IsOpen="False"
+                         IsClosable="True" />
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Record bar -->
+        <Border Grid.Row="2"
+                BorderThickness="0,1,0,0"
+                BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                Padding="24,16">
+            <Grid ColumnSpacing="{StaticResource GapM}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <Button x:Name="RecordButton"
+                        Grid.Column="0"
+                        Style="{StaticResource AccentButtonStyle}"
+                        Click="OnToggleRecord">
+                    <StackPanel Orientation="Horizontal" Spacing="{StaticResource GapS}">
+                        <FontIcon x:Name="RecordIcon" Glyph="&#xE7C8;" FontSize="14" />
+                        <TextBlock x:Name="RecordLabel" Text="Start recording" />
+                    </StackPanel>
+                </Button>
+
+                <TextBlock x:Name="ElapsedLabel"
+                           Grid.Column="1"
+                           VerticalAlignment="Center"
+                           Style="{StaticResource BodyTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                <TextBlock Grid.Column="2"
+                           VerticalAlignment="Center"
+                           Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                           Text="F9 record · F10 pause · F8 draw" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
+
