@@ -203,6 +203,14 @@ make distclean >/dev/null 2>&1 || true
 # too. Enabling the filter alone builds and lists ddagrab happily, then fails at
 # record time with "Error opening input file ddagrab=..." -- which reads like a
 # broken filter rather than a missing device.
+#
+# NOTE ALSO wrapped_avframe. A lavfi input arrives as a `wrapped_avframe`
+# stream (visible in ffmpeg's own stream report as
+# "Video: wrapped_avframe, d3d11"), so its decoder is needed to unwrap the
+# frames before any filter or encoder can touch them. Without it ddagrab opens
+# fine, reports the right resolution, and then fails with "Error opening output
+# files: Invalid argument" -- an output-side message for what is really a
+# missing input codec. That misdirection cost real time; do not remove it.
 ./configure \
   --prefix="$PREFIX" \
   --pkg-config=pkg-config \
@@ -276,6 +284,7 @@ make distclean >/dev/null 2>&1 || true
   --enable-decoder=gif \
   --enable-decoder=webp \
   --enable-decoder=rawvideo \
+  --enable-decoder=wrapped_avframe \
   \
   --enable-demuxer=mov \
   --enable-demuxer=matroska \
@@ -308,6 +317,9 @@ make distclean >/dev/null 2>&1 || true
   --enable-bsf=h264_mp4toannexb \
   --enable-bsf=hevc_mp4toannexb \
   --enable-bsf=extract_extradata \
+  \
+  --enable-encoder=rawvideo \
+  --enable-encoder=wrapped_avframe \
   \
   --extra-cflags="-I$PREFIX/include -O2" \
   --extra-ldflags="-L$PREFIX/lib -static -static-libgcc -static-libstdc++" \

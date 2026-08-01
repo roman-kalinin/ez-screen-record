@@ -1,4 +1,5 @@
 using EzScreenRecord.Capture;
+using EzScreenRecord.Interop;
 using EzScreenRecord.Models;
 using EzScreenRecord.Views;
 using Microsoft.UI.Xaml;
@@ -41,9 +42,15 @@ public sealed partial class MainWindow : Window
 
         PopulateOptions();
         BuildStage();
+        SetupHotkeys();
         _ = RestoreSourceAsync();
 
-        Closed += (_, _) => Settings.Save();
+        Closed += (_, _) =>
+        {
+            _hotkeys?.Dispose();
+            _overlay?.Close();
+            Settings.Save();
+        };
     }
 
     // --- Options ------------------------------------------------------------
@@ -347,6 +354,7 @@ public sealed partial class MainWindow : Window
 
         SetRecordingUi(true);
         StatusBar.IsOpen = false;
+        ShowToolbar();
 
         _elapsedTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _elapsedTimer.Tick += (_, _) =>
@@ -378,14 +386,120 @@ public sealed partial class MainWindow : Window
             RecordButton.IsEnabled = true;
             SetRecordingUi(false);
             ElapsedLabel.Text = "";
+            HideToolbar();
         }
+    }
+
+    // --- Recording toolbar --------------------------------------------------
+
+    private ToolbarWindow? _toolbar;
+
+    private void ShowToolbar()
+    {
+        if (_toolbar is not null) return;
+
+        _toolbar = new ToolbarWindow(Settings);
+        _toolbar.StopRequested += () => DispatcherQueue.TryEnqueue(async () => await StopRecordingAsync());
+        _toolbar.UndoRequested += () => _overlay?.Undo();
+        _toolbar.ClearRequested += () => _overlay?.ClearAll();
+        _toolbar.ToolPicked += _ =>
+        {
+            // Picking a tool arms the overlay, so the button does what it looks
+            // like it does rather than silently setting a preference.
+            if (_overlay is null) ToggleDrawing();
+        };
+        _toolbar.Activate();
+
+        // Report a failed exclusion rather than letting the toolbar quietly
+        // appear in the finished video.
+        if (Settings.Recording.HideToolbarFromCapture && !_toolbar.ApplyCaptureExclusion())
+        {
+            ShowStatus("The toolbar could not be hidden from the recording.",
+                InfoBarSeverity.Warning);
+        }
+    }
+
+    private void HideToolbar()
+    {
+        _toolbar?.Close();
+        _toolbar = null;
     }
 
     private void SetRecordingUi(bool recording)
     {
         RecordLabel.Text = recording ? "Stop recording" : "Start recording";
         // Segoe Fluent Icons: Stop (E71A) while recording, Record (E7C8) idle.
-        RecordIcon.Glyph = recording ? "\uE71A" : "\uE7C8";
+        RecordIcon.Glyph = recording ? Glyphs.Stop : Glyphs.Record;
+    }
+
+    // --- Hotkeys and the drawing overlay ------------------------------------
+
+    private HotkeyManager? _hotkeys;
+    private OverlayWindow? _overlay;
+
+    private void SetupHotkeys()
+    {
+        _hotkeys = new HotkeyManager();
+        _hotkeys.Triggered += OnHotkey;
+
+        if (_hotkeys.Failed.Count > 0)
+        {
+            ShowStatus(
+                $"Another app already owns {string.Join(", ", _hotkeys.Failed)} — " +
+                "those shortcuts will not work.",
+                InfoBarSeverity.Warning);
+        }
+    }
+
+    private void OnHotkey(HotkeyAction action)
+    {
+        // WM_HOTKEY arrives on the message-only window's thread, which is this
+        // one, but the enqueue keeps UI work off the message pump either way.
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            switch (action)
+            {
+                case HotkeyAction.ToggleRecord:
+                    OnToggleRecord(this, new RoutedEventArgs());
+                    break;
+
+                case HotkeyAction.TogglePause:
+                    // ffmpeg has no pause: the process would have to be
+                    // suspended and the timestamps stitched afterwards. Left
+                    // unimplemented rather than silently doing nothing.
+                    ShowStatus("Pause is not implemented yet.", InfoBarSeverity.Informational);
+                    break;
+
+                case HotkeyAction.ToggleDraw:
+                    ToggleDrawing();
+                    break;
+
+                case HotkeyAction.ClearDraw:
+                    _overlay?.ClearAll();
+                    break;
+            }
+        });
+    }
+
+    private void ToggleDrawing()
+    {
+        if (_overlay is null)
+        {
+            _overlay = new OverlayWindow(Settings);
+            _overlay.Dismissed += () => ToggleDrawing();
+            _overlay.Activate();
+            _overlay.SetInteractive(true);
+            ShowStatus("Drawing on — F8 to exit, Ctrl+Shift+X to clear.",
+                InfoBarSeverity.Informational);
+            return;
+        }
+
+        // Second press exits drawing entirely rather than merely making the
+        // overlay click-through: leaving an invisible armed window over the
+        // desktop is confusing, and the strokes should go with it.
+        _overlay.Close();
+        _overlay = null;
+        StatusBar.IsOpen = false;
     }
 
     internal void ShowStatus(string message, InfoBarSeverity severity)

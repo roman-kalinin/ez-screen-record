@@ -90,6 +90,24 @@ internal static class OverlaySelfTest
             affinity == Win32.WDA_EXCLUDEFROMCAPTURE, ref failures);
         overlay.SetExcludedFromCapture(false);
 
+        // --- Hotkeys --------------------------------------------------------
+        // Registration is system-wide, so a clash with another running app is a
+        // real possibility. Verify the manager both claims the keys and hands
+        // them back on dispose, or a second launch would find them taken.
+        using (var hotkeys = new HotkeyManager())
+        {
+            Check("all four hotkeys registered (F8/F9/F10/Ctrl+Shift+X)",
+                hotkeys.Failed.Count == 0, ref failures);
+            if (hotkeys.Failed.Count > 0)
+                Write($"        unavailable: {string.Join(", ", hotkeys.Failed)}");
+        }
+
+        using (var again = new HotkeyManager())
+        {
+            Check("hotkeys released on dispose (re-registration succeeds)",
+                again.Failed.Count == 0, ref failures);
+        }
+
         Write(failures == 0
             ? "All overlay checks passed."
             : $"{failures} overlay check(s) FAILED.");
