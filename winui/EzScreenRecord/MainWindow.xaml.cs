@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Windows.Storage.Pickers;
+using DispatcherTimer = Microsoft.UI.Xaml.DispatcherTimer;
 
 namespace EzScreenRecord;
 
@@ -189,11 +190,109 @@ public sealed partial class MainWindow : Window
         Settings.Save();
     }
 
-    // --- Recording (wired in Phase 2) ---------------------------------------
+    // --- Recording ----------------------------------------------------------
 
-    private void OnToggleRecord(object sender, RoutedEventArgs e)
+    private readonly Recorder _recorder = new();
+    private DispatcherTimer? _elapsedTimer;
+
+    private async void OnToggleRecord(object sender, RoutedEventArgs e)
     {
-        ShowStatus("Recording is wired up in Phase 2.", InfoBarSeverity.Informational);
+        if (_recorder.IsRecording)
+        {
+            await StopRecordingAsync();
+            return;
+        }
+
+        await StartRecordingAsync();
+    }
+
+    private async Task StartRecordingAsync()
+    {
+        if (_source is null)
+        {
+            ShowStatus("Pick something to record first.", InfoBarSeverity.Warning);
+            return;
+        }
+
+        // A window source cannot be handed to ddagrab, which captures whole
+        // outputs. Recording the display the window sits on is the honest
+        // fallback; silently recording the wrong thing would be worse.
+        if (_source.Kind == CaptureKind.Window)
+        {
+            ShowStatus(
+                "Window capture is not wired up yet — recording the primary display instead.",
+                InfoBarSeverity.Informational);
+        }
+
+        var dir = Settings.Recording.OutputDir ?? AppSettings.DefaultOutputDir;
+        var name = $"Recording {DateTime.Now:yyyy-MM-dd HH-mm-ss}.mp4";
+
+        var options = new RecordOptions
+        {
+            OutputPath = Path.Combine(dir, name),
+            Fps = Settings.Recording.Fps,
+            DisplayIndex = _source.Kind == CaptureKind.Screen ? _source.MonitorIndex : 0,
+            Height = Settings.ResolutionHeight,
+            Quality = Settings.Recording.Quality,
+            MicDeviceName = Settings.Recording.MicEnabled ? Settings.Recording.MicDeviceName : null,
+        };
+
+        RecordButton.IsEnabled = false;
+        try
+        {
+            await _recorder.StartAsync(options);
+        }
+        catch (Exception ex)
+        {
+            ShowStatus(ex.Message, InfoBarSeverity.Error);
+            return;
+        }
+        finally
+        {
+            RecordButton.IsEnabled = true;
+        }
+
+        SetRecordingUi(true);
+        StatusBar.IsOpen = false;
+
+        _elapsedTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _elapsedTimer.Tick += (_, _) =>
+        {
+            var t = _recorder.Elapsed;
+            ElapsedLabel.Text = $"{(int)t.TotalMinutes:00}:{t.Seconds:00}";
+        };
+        _elapsedTimer.Start();
+    }
+
+    private async Task StopRecordingAsync()
+    {
+        _elapsedTimer?.Stop();
+        _elapsedTimer = null;
+
+        RecordButton.IsEnabled = false;
+        RecordLabel.Text = "Saving…";
+        try
+        {
+            var path = await _recorder.StopAsync();
+            ShowStatus($"Saved to {path}", InfoBarSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            ShowStatus(ex.Message, InfoBarSeverity.Error);
+        }
+        finally
+        {
+            RecordButton.IsEnabled = true;
+            SetRecordingUi(false);
+            ElapsedLabel.Text = "";
+        }
+    }
+
+    private void SetRecordingUi(bool recording)
+    {
+        RecordLabel.Text = recording ? "Stop recording" : "Start recording";
+        // Segoe Fluent Icons: Stop (E71A) while recording, Record (E7C8) idle.
+        RecordIcon.Glyph = recording ? "\uE71A" : "\uE7C8";
     }
 
     internal void ShowStatus(string message, InfoBarSeverity severity)

@@ -16,16 +16,21 @@
 #   aac           audio encode
 #   mp4/h264      muxing and the copy path
 #
-# Licensing: LGPL, deliberately. No --enable-gpl and no x264, so the shipped
-# installer is no longer GPL-encumbered -- which is what
-# resources/ffmpeg/README.md flags as blocking an MIT release.
+# LICENSING: this build is GPL, and that is a deliberate reversal.
 #
-# THE TRADE-OFF: dropping x264 removes the software-encode fallback. On a
-# machine with no NVENC (AMD/Intel GPU, or an older NVIDIA card) the recorder
-# has no encoder left. That is why the build below ALSO enables the platform
-# hardware encoders that need no external library -- AMF for AMD and QSV for
-# Intel -- so hardware encode is still available across vendors. The caller
-# must pick among them; see hardwareEncoder() in capture-backend.ts.
+# The original plan was LGPL (no --enable-gpl, no x264), which would have
+# cleared the GPL encumbrance resources/ffmpeg/README.md flags as blocking an
+# MIT release. Dropping x264 turned out to cost too much: it is the ONLY
+# software encoder, so a machine without NVENC or AMF -- any Intel-graphics
+# laptop -- would have no encoder at all and could not record.
+#
+# Intel QSV would have covered that gap, but --enable-libmfx needs an external
+# SDK that is not part of this toolchain, so it is not an option here.
+#
+# The choice is therefore: LGPL and the app cannot record on Intel machines, or
+# GPL and it records everywhere. Recording everywhere wins. To revisit, drop
+# --enable-gpl / --enable-libx264 / --enable-encoder=libx264 and the x264 build
+# step below, and accept the hardware-encoder requirement.
 #
 # Run from WSL / any Linux with mingw-w64. Cross-compiles to win64.
 #
@@ -130,7 +135,19 @@ if [ ! -f "$PREFIX/lib/pkgconfig/libplacebo.pc" ]; then
     -Dopengl=disabled -Dd3d11=disabled -Ddemos=false -Dtests=false >/dev/null
   meson compile -C "$ROOT/libplacebo/build" -j"$JOBS" >/dev/null
   meson install -C "$ROOT/libplacebo/build" >/dev/null
+
 fi
+
+# shaderc.pc advertises -lshaderc_shared, but shaderc was built static above and
+# only ships libshaderc_combined.a. libplacebo.pc pulls it in via
+# `Requires: shaderc`, so the bad flag reaches ffmpeg's configure, whose link
+# test then fails and reports the thoroughly misleading
+# "libplacebo >= 4.192.0 not found using pkg-config" -- as though libplacebo
+# were missing, when the real problem is one unresolvable dependency of it.
+#
+# Patch shaderc.pc (NOT libplacebo.pc, which never names the library directly).
+sed -i 's/-lshaderc_shared/-lshaderc_combined -lstdc++/g' \
+  "$PREFIX/lib/pkgconfig/shaderc.pc"
 
 # --- 4. nv-codec-headers (NVENC; MIT, no NVIDIA binary redistributed) -------
 if [ ! -f "$PREFIX/lib/pkgconfig/ffnvcodec.pc" ]; then
@@ -140,7 +157,23 @@ if [ ! -f "$PREFIX/lib/pkgconfig/ffnvcodec.pc" ]; then
   make -C "$ROOT/nv-codec-headers" PREFIX="$PREFIX" install >/dev/null
 fi
 
-# --- 5. ffmpeg --------------------------------------------------------------
+# --- 5. x264 (software encode fallback; see the licensing note at the top) ---
+if [ ! -f "$PREFIX/lib/pkgconfig/x264.pc" ]; then
+  echo "==> x264"
+  rm -rf "$ROOT/x264"
+  git clone --depth 1 -b stable https://code.videolan.org/videolan/x264.git "$ROOT/x264"
+  ( cd "$ROOT/x264" && ./configure \
+      --prefix="$PREFIX" \
+      --host="$TARGET" \
+      --cross-prefix="$TARGET-" \
+      --enable-static \
+      --disable-cli \
+      --disable-opencl \
+      --bit-depth=8 >/dev/null \
+    && make -j"$JOBS" >/dev/null && make install >/dev/null )
+fi
+
+# --- 6. ffmpeg --------------------------------------------------------------
 echo "==> ffmpeg"
 if [ ! -d "$ROOT/ffmpeg" ]; then
   git clone --depth 1 -b n7.1 https://github.com/FFmpeg/FFmpeg "$ROOT/ffmpeg"
@@ -180,7 +213,6 @@ make distclean >/dev/null 2>&1 || true
   --enable-ffnvcodec \
   --enable-nvenc \
   --enable-amf \
-  --enable-libmfx \
   \
   --enable-indev=dshow \
   --enable-indev=gdigrab \
@@ -205,7 +237,10 @@ make distclean >/dev/null 2>&1 || true
   --enable-encoder=h264_nvenc \
   --enable-encoder=hevc_nvenc \
   --enable-encoder=h264_amf \
-  --enable-encoder=h264_qsv \
+  --enable-encoder=hevc_amf \
+  --enable-encoder=libx264 \
+  --enable-libx264 \
+  --enable-gpl \
   --enable-encoder=aac \
   --enable-encoder=pcm_s16le \
   --enable-encoder=mjpeg \
