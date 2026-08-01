@@ -164,7 +164,10 @@ fi
 if [ ! -d "$PREFIX/include/AMF" ]; then
   echo "==> AMF headers"
   rm -rf "$ROOT/amf"
-  git clone --depth 1 -b v1.4.35 https://github.com/GPUOpen-LibrariesAndSDKs/AMF "$ROOT/amf"
+  # Keep roughly in step with the ffmpeg tag below: ffmpeg checks for a minimum
+  # AMF version, so an older header set fails configure with the unhelpful
+  # "amf requested but not found".
+  git clone --depth 1 -b v1.4.36 https://github.com/GPUOpen-LibrariesAndSDKs/AMF "$ROOT/amf"
   mkdir -p "$PREFIX/include/AMF"
   cp -r "$ROOT/amf/amf/public/include/"* "$PREFIX/include/AMF/"
 fi
@@ -187,8 +190,13 @@ fi
 
 # --- 7. ffmpeg --------------------------------------------------------------
 echo "==> ffmpeg"
+# n8.0, not n7.1. The recorder's filter graph uses libplacebo's `fit_mode`
+# option, which does not exist in 7.1 -- a take with a camera or image overlay
+# dies at start with "Error applying option 'fit_mode' to filter 'libplacebo':
+# Option not found", while screen-only takes work fine. Pinned rather than
+# tracking master so a future upstream change cannot silently break the graph.
 if [ ! -d "$ROOT/ffmpeg" ]; then
-  git clone --depth 1 -b n7.1 https://github.com/FFmpeg/FFmpeg "$ROOT/ffmpeg"
+  git clone --depth 1 -b n8.0 https://github.com/FFmpeg/FFmpeg "$ROOT/ffmpeg"
 fi
 cd "$ROOT/ffmpeg"
 make distclean >/dev/null 2>&1 || true
