@@ -86,6 +86,18 @@ public sealed class LayoutStageControl : UserControl
             BorderBrush = new SolidColorBrush(Color.FromArgb(220, 10, 132, 255)),
             BorderThickness = new Thickness(1.5),
         };
+
+        // Clip the feed to the box.
+        //
+        // UniformToFill scales to COVER, so the image is deliberately larger
+        // than the box on one axis. A Border does not clip its child unless told
+        // to, so without this the video overflowed: resizing moved the selection
+        // rectangle while the picture stayed put, which is what made the webcam
+        // look broken. The Border's own CornerRadius then shapes the result.
+        _cameraBox.SizeChanged += (_, e) => _cameraBox.Clip = new RectangleGeometry
+        {
+            Rect = new Windows.Foundation.Rect(0, 0, e.NewSize.Width, e.NewSize.Height),
+        };
         _cameraBox.PointerPressed += (_, e) => BeginDrag(e, DragKind.Move, default);
 
         _canvas = new Canvas();
@@ -510,8 +522,16 @@ public sealed class LayoutStageControl : UserControl
 
         // Mirroring is what the recording does, so the preview must match or
         // the layout is a lie.
-        _cameraImage.RenderTransformOrigin = new Point(0.5, 0.5);
-        _cameraImage.RenderTransform = _camera.Mirrored
+        //
+        // The flip is applied to the BOX, not to the image inside it.
+        // UniformToFill makes the image larger than the box on one axis, so
+        // RenderTransformOrigin 0.5 on the image is the centre of the oversized
+        // image rather than of the visible area -- flipping about that pushed
+        // the picture sideways and left it visibly offset from its frame.
+        // Flipping the box mirrors exactly what is on screen.
+        _cameraImage.RenderTransform = null;
+        _cameraBox.RenderTransformOrigin = new Point(0.5, 0.5);
+        _cameraBox.RenderTransform = _camera.Mirrored
             ? new ScaleTransform { ScaleX = -1 }
             : null;
 

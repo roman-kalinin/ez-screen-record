@@ -138,13 +138,19 @@ public sealed class ToolbarWindow : Window
         stop.Click += (_, _) => StopRequested?.Invoke();
         content.Children.Add(stop);
 
+        // SQUARE corners and no border, deliberately.
+        //
+        // The window behind this is opaque -- WinUI cannot be transparent -- so
+        // rounding the pill only revealed the window's black backdrop in the
+        // corners, and the 1px light border read as a hard outline around that
+        // black rectangle. Since the window is sized exactly to the bar, the
+        // bar's own fill IS the visible shape; rounding is applied to the
+        // WINDOW instead, via DWM, so the corners are genuinely round rather
+        // than drawn round over black.
         _bar = new Border
         {
             Child = content,
-            CornerRadius = new CornerRadius(32),
-            Background = new SolidColorBrush(Color.FromArgb(247, 28, 28, 32)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(31, 255, 255, 255)),
-            BorderThickness = new Thickness(1),
+            Background = new SolidColorBrush(Color.FromArgb(255, 28, 28, 32)),
             RequestedTheme = ElementTheme.Dark,
         };
 
@@ -236,6 +242,14 @@ public sealed class ToolbarWindow : Window
             Win32.WS_EX_LAYERED | Win32.WS_EX_TOOLWINDOW | Win32.WS_EX_NOACTIVATE);
         Win32.SetWindowPos(Hwnd, Win32.HWND_TOPMOST, 0, 0, 0, 0,
             Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE);
+
+        // Round the WINDOW, so the corners are actually round instead of the
+        // bar being drawn round over an opaque black window. DWMWCP_ROUND is
+        // the same treatment Windows 11 gives ordinary windows, so the bar
+        // matches the rest of the system.
+        var round = 2; // DWMWCP_ROUND
+        Win32.DwmSetWindowAttributeInt(Hwnd, Win32.DWMWA_WINDOW_CORNER_PREFERENCE,
+            ref round, sizeof(int));
     }
 
     public void SetElapsed(string text) => _timer.Text = text;
