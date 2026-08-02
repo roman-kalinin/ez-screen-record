@@ -43,6 +43,8 @@ public sealed partial class MainWindow
             HideToolbar();
             HideCameraBubble();
             CloseOverlay();
+            // Otherwise the loopback graph outlives the take and keeps writing.
+            await StopSystemAudioAsync();
             SetState(RecordingState.Idle);
             ElapsedLabel.Text = "00:00";
             await (_stage?.StartPreviewsAsync() ?? Task.CompletedTask);
@@ -385,6 +387,13 @@ public sealed partial class MainWindow
         {
             HideToolbar();
             HideCameraBubble();
+
+            // The audio graph was started before ffmpeg. Left running it
+            // captures the desktop for the rest of the app's lifetime, writing
+            // to a temp WAV that grows unbounded, and the next take overwrites
+            // the field and leaks the graph and its file handle for good.
+            await StopSystemAudioAsync();
+
             _ = _stage?.StartPreviewsAsync();
             Toast("Could not start recording", ex.Message, ToastKind.Error);
             SetState(RecordingState.Idle);
@@ -406,8 +415,40 @@ public sealed partial class MainWindow
         _elapsedTimer.Start();
     }
 
+    /// <summary>
+    /// Tear down desktop-audio capture and bin its WAV. For the abandon paths
+    /// (failed start, mid-take ffmpeg death) where there is no video to mux
+    /// into -- the successful path stops it inline so it can use the file.
+    /// </summary>
+    private async Task StopSystemAudioAsync()
+    {
+        if (_systemAudio is null) return;
+
+        var capture = _systemAudio;
+        _systemAudio = null;
+        _systemAudioPath = null;
+
+        try
+        {
+            var wav = await capture.StopAsync();
+            if (wav is not null) { try { File.Delete(wav); } catch { /* best effort */ } }
+        }
+        catch { /* tearing down anyway */ }
+    }
+
     private async Task StopRecordingAsync()
     {
+        // Reachable from the hotkey, the record button and the toolbar's stop
+        // button, none of which disable while the save runs. A second entry
+        // re-enters StopAsync with no process left, throws "No recording is
+        // running" over the successful save, and can race the audio mux onto a
+        // file the first pass already replaced.
+        if (_state is not (RecordingState.Recording or RecordingState.Paused)) return;
+
+        // A pause mid-flight has already detached ffmpeg but not yet flipped
+        // the state; stopping now would tear down half-finished segments.
+        if (_pauseInFlight) return;
+
         _elapsedTimer?.Stop();
         _elapsedTimer = null;
         SetState(RecordingState.Saving);
@@ -415,6 +456,17 @@ public sealed partial class MainWindow
         try
         {
             var path = await _recorder.StopAsync();
+
+            // A failed join means only the pre-pause footage is in the saved
+            // file and the rest is sitting beside it as .partN.mp4. Reporting
+            // a plain "Recording saved" would hide that entirely.
+            if (_recorder.LastJoinError is { } joinError)
+            {
+                Toast("Only part of the take was saved",
+                    $"The paused segments could not be joined ({joinError}). " +
+                    "The remaining pieces are in the same folder as .part files.",
+                    ToastKind.Error);
+            }
 
             // Fold in the desktop audio, if it was captured. Done after the
             // take rather than as a live ffmpeg input so a stall in our audio
@@ -455,28 +507,54 @@ public sealed partial class MainWindow
     }
 
 
+    /// <summary>
+    /// Guards the whole pause/resume transition.
+    ///
+    /// Ending a segment waits for ffmpeg to drain, which takes up to 15s on a
+    /// slow disk. Throughout that wait the state is still Recording, so a Stop
+    /// (hotkey or toolbar) would enter StopAsync against a recorder whose
+    /// process has already been detached, throw "No recording is running", drop
+    /// the UI to Idle -- and then the pause would finish and set it back to
+    /// Paused, leaving recording chrome on screen with no ffmpeg behind it and
+    /// no way out but restarting the app.
+    /// </summary>
+    private bool _pauseInFlight;
+
     /// <summary>Drive every state-dependent piece of chrome from one place.</summary>
-    private void TogglePause()
+    private async void TogglePause()
     {
         if (_state is not (RecordingState.Recording or RecordingState.Paused)) return;
+        if (_pauseInFlight) return;
 
-        if (_recorder.IsPaused)
+        _pauseInFlight = true;
+        try
         {
-            if (!_recorder.Resume())
+            if (_recorder.IsPaused)
             {
-                Toast("Could not resume", null, ToastKind.Error);
-                return;
+                if (!await _recorder.ResumeAsync())
+                {
+                    Toast("Could not resume", null, ToastKind.Error);
+                    return;
+                }
+                // Desktop audio has to skip the same span the video does,
+                // or everything after the pause plays early by its duration.
+                _systemAudio?.Resume();
+                SetState(RecordingState.Recording);
             }
-            SetState(RecordingState.Recording);
+            else
+            {
+                if (!await _recorder.PauseAsync())
+                {
+                    Toast("Could not pause", null, ToastKind.Error);
+                    return;
+                }
+                _systemAudio?.Pause();
+                SetState(RecordingState.Paused);
+            }
         }
-        else
+        finally
         {
-            if (!_recorder.Pause())
-            {
-                Toast("Could not pause", null, ToastKind.Error);
-                return;
-            }
-            SetState(RecordingState.Paused);
+            _pauseInFlight = false;
         }
 
         _toolbar?.SetPaused(_recorder.IsPaused);

@@ -35,7 +35,19 @@ public sealed class CameraBubbleWindow : Window
     private readonly Image _preview;
     private readonly Microsoft.UI.Xaml.Media.Imaging.SoftwareBitmapSource _frames = new();
     private Windows.Media.Capture.Frames.MediaFrameReader? _frameReader;
-    private bool _frameBusy;
+    /// <summary>
+    /// Earliest tick at which another frame may be handed to the UI thread.
+    /// A deadline rather than a busy flag: see OnFrame for why a flag deadlocks
+    /// during a window drag.
+    /// </summary>
+    private long _frameBusyUntil;
+
+    /// <summary>
+    /// How long a frame may be in flight before the next one is allowed
+    /// through. Long enough that normal delivery never overlaps, short enough
+    /// that a stalled UI thread costs a few frames rather than the whole take.
+    /// </summary>
+    private const int FrameTimeoutMs = 250;
     private MediaCapture? _capture;
 
     /// <summary>
@@ -46,8 +58,6 @@ public sealed class CameraBubbleWindow : Window
     /// </summary>
     private void OnFrame(Windows.Media.Capture.Frames.MediaFrameReader sender, object args)
     {
-        if (_frameBusy) return;
-
         using var frame = sender.TryAcquireLatestFrame();
         var bitmap = frame?.VideoMediaFrame?.SoftwareBitmap;
         if (bitmap is null) return;
@@ -62,15 +72,28 @@ public sealed class CameraBubbleWindow : Window
                     Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
                     Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied);
 
-        _frameBusy = true;
+        // A timestamp, not a boolean flag.
+        //
+        // A bool latch deadlocks: while the window is being dragged or resized,
+        // the UI thread is inside a modal move loop, so the enqueued callback
+        // never runs and the flag is never cleared. Every later frame is then
+        // dropped and the camera stays frozen for the rest of the take -- it
+        // never recovers, because nothing else clears the latch.
+        //
+        // A deadline lets the next frame through once the previous one has had
+        // long enough, whether or not its callback ever ran.
+        var now = Environment.TickCount64;
+        if (now < _frameBusyUntil) return;
+        _frameBusyUntil = now + FrameTimeoutMs;
+
         var queued = DispatcherQueue.TryEnqueue(async () =>
         {
             try { await _frames.SetBitmapAsync(converted); }
             catch { /* the window closed mid-frame */ }
-            finally { _frameBusy = false; }
+            finally { _frameBusyUntil = 0; }
         });
 
-        if (!queued) _frameBusy = false;
+        if (!queued) _frameBusyUntil = 0;
     }
 
     private bool _dragging;

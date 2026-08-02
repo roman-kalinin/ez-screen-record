@@ -21,7 +21,11 @@ public sealed class ImageCompositeOptions
     public double Opacity { get; init; } = 1.0;
 }
 
-public sealed class RecordOptions
+/// <summary>
+/// A record so pause/resume can re-launch the same take against a new segment
+/// path with `with { OutputPath = ... }`.
+/// </summary>
+public sealed record RecordOptions
 {
     public string OutputPath { get; init; } = "";
     public int Fps { get; init; } = 30;
@@ -95,6 +99,40 @@ public sealed class Recorder
         _ => ("23", "yuv420p", "veryfast"),
     };
 
+    // Pause is implemented by splitting the take into segments, so these track
+    // the pieces to concatenate on stop. A take with no pauses has exactly one.
+    private readonly List<string> _segments = [];
+    private string _currentSegment = "";
+    private RecordOptions? _resumeOptions;
+
+    private string NextSegmentPath() => Path.Combine(
+        Path.GetDirectoryName(OutputPath)!,
+        $"{Path.GetFileNameWithoutExtension(OutputPath)}.part{_segments.Count}.mp4");
+
+    /// <summary>
+    /// Bin segment and scratch files left behind by a take that never finished
+    /// -- a crash or a kill mid-recording. They sit in the output folder next to
+    /// real recordings, are named like them, and nothing else ever removes
+    /// them. Anything still being written is skipped: the delete simply fails.
+    /// </summary>
+    public static void CleanOrphans(string outputDir)
+    {
+        if (!Directory.Exists(outputDir)) return;
+
+        foreach (var pattern in new[] { "*.part*.mp4", "*.joined.mp4", "*.mixed.mp4" })
+        {
+            foreach (var path in Directory.EnumerateFiles(outputDir, pattern))
+            {
+                try { File.Delete(path); } catch { /* in use, or not ours */ }
+            }
+        }
+
+        foreach (var path in Directory.EnumerateFiles(Path.GetTempPath(), "ez-sysaudio-*.wav"))
+        {
+            try { File.Delete(path); } catch { /* in use */ }
+        }
+    }
+
     public async Task StartAsync(RecordOptions opts)
     {
         if (IsRecording) throw new InvalidOperationException("A recording is already running.");
@@ -108,6 +146,23 @@ public sealed class Recorder
         Directory.CreateDirectory(Path.GetDirectoryName(opts.OutputPath)!);
         OutputPath = opts.OutputPath;
 
+        _segments.Clear();
+        _resumeOptions = opts;
+        _currentSegment = opts.OutputPath;
+
+        StartedAt = DateTime.UtcNow;
+        IsPaused = false;
+        _pausedTotal = TimeSpan.Zero;
+
+        await StartProcessAsync(opts);
+    }
+
+    /// <summary>
+    /// Launch one ffmpeg segment. Split from StartAsync so resuming after a
+    /// pause can reuse it with a different output path.
+    /// </summary>
+    private async Task StartProcessAsync(RecordOptions opts)
+    {
         var args = BuildArguments(opts);
 
         var psi = new ProcessStartInfo
@@ -143,10 +198,6 @@ public sealed class Recorder
         _proc.Start();
         AssignToJob(_proc);
         _proc.BeginErrorReadLine();
-        StartedAt = DateTime.UtcNow;
-
-        IsPaused = false;
-        _pausedTotal = TimeSpan.Zero;
 
         // Surface an immediate failure (bad device, missing filter) rather than
         // letting the caller believe recording is under way. 1.8s is what the
@@ -458,12 +509,42 @@ public sealed class Recorder
     /// </summary>
     public async Task<string> StopAsync()
     {
-        var proc = _proc ?? throw new InvalidOperationException("No recording is running.");
+        if (_proc is null && !IsPaused)
+            throw new InvalidOperationException("No recording is running.");
 
-        // A suspended process cannot read 'q' from stdin or flush its muxer, so
-        // stopping while paused would hang until the kill timeout and leave an
-        // unplayable file. Resume first, then stop normally.
-        if (IsPaused) Resume();
+        // Paused means the current segment is already closed; there is nothing
+        // running to stop, only segments to join.
+        if (!IsPaused)
+        {
+            await StopProcessAsync();
+            _segments.Add(_currentSegment);
+        }
+
+        IsPaused = false;
+        StartedAt = default;
+
+        var result = await JoinSegmentsAsync();
+        _segments.Clear();
+        _resumeOptions = null;
+        return result;
+    }
+
+    /// <summary>
+    /// End the running ffmpeg cleanly and wait for it to flush.
+    ///
+    /// `q` on stdin asks it to finalise the container; killing the process would
+    /// leave an unplayable file with no moov atom. The hard-kill fallback is
+    /// generous on purpose: every take used to end with a 275-558ms stall that
+    /// swallowed the last 25-67 frames, because the encoder was still draining
+    /// its queue when the process was torn down.
+    /// </summary>
+    private async Task<bool> StopProcessAsync()
+    {
+        var proc = _proc;
+        if (proc is null) return false;
+
+        // Detach first: this exit is expected, and Failed is for crashes.
+        _proc = null;
 
         try
         {
@@ -486,10 +567,124 @@ public sealed class Recorder
             try { proc.Kill(entireProcessTree: true); } catch { /* already gone */ }
         }
 
-        _proc = null;
-        StartedAt = default;
-        return OutputPath;
+        return true;
     }
+
+    /// <summary>
+    /// Concatenate the take's segments into the final file.
+    ///
+    /// One segment is the common case (no pauses) and is already at the right
+    /// path, so nothing is done. Several are joined with the concat demuxer and
+    /// a stream copy: lossless, and fast enough that the user does not notice.
+    /// </summary>
+    private async Task<string> JoinSegmentsAsync()
+    {
+        LastJoinError = null;
+
+        var parts = _segments.Where(File.Exists).ToList();
+        if (parts.Count == 0) return OutputPath;
+
+        // No pause: the single segment IS the output file.
+        if (parts.Count == 1 && string.Equals(parts[0], OutputPath, StringComparison.OrdinalIgnoreCase))
+            return OutputPath;
+
+        var listFile = Path.Combine(Path.GetTempPath(), $"ez-concat-{Guid.NewGuid():N}.txt");
+        var joined = Path.Combine(
+            Path.GetDirectoryName(OutputPath)!,
+            Path.GetFileNameWithoutExtension(OutputPath) + ".joined.mp4");
+
+        try
+        {
+            // concat's list format needs single quotes doubled, not backslash
+            // escapes, and forward slashes are safest on Windows paths.
+            await File.WriteAllLinesAsync(listFile,
+                parts.Select(p => $"file '{p.Replace("\\", "/").Replace("'", "'\\''")}'"));
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = FfmpegLocator.FfmpegPath,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardError = true,
+            };
+            foreach (var a in new[]
+            {
+                "-y", "-hide_banner",
+                "-f", "concat", "-safe", "0", "-i", listFile,
+                "-c", "copy",
+                // Every segment is a separate nvenc session with its own
+                // SPS/PPS. MP4 keeps only the first segment's `avcC`, so
+                // without this the later segments decode to nothing: the
+                // container still reports the full duration, but playback
+                // stops dead at the first pause. Converting to Annex B puts
+                // each segment's parameter sets in-band ahead of its own
+                // keyframes, and the mp4 muxer rebuilds a correct avcC.
+                "-bsf:v", "h264_mp4toannexb",
+                // Segment 2 starts at PTS 0 as well; without this the joined
+                // timeline collapses instead of running end to end.
+                "-fflags", "+genpts",
+                "-movflags", "+faststart", joined,
+            })
+            {
+                psi.ArgumentList.Add(a);
+            }
+
+            using var proc = Process.Start(psi);
+            if (proc is null)
+            {
+                LastJoinError = "ffmpeg could not be started to join the paused segments.";
+                return parts[0];
+            }
+
+            // Read stderr: leaving a redirected pipe unread deadlocks ffmpeg
+            // once it fills, which is exactly how the audio mux first failed.
+            var stderr = await proc.StandardError.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+
+            if (proc.ExitCode != 0 || !File.Exists(joined))
+            {
+                // Falling back to segment 0 silently discards everything
+                // recorded after the first pause while still reporting
+                // "Recording saved" -- data loss the user cannot even see.
+                LastJoinError = proc.ExitCode != 0
+                    ? ExplainFailure(stderr, proc.ExitCode)
+                    : "ffmpeg reported success but wrote no joined file.";
+                return parts[0];
+            }
+
+            // Put the joined file in place BEFORE deleting the segments.
+            // Segment 0 is OutputPath itself, so deleting first and moving
+            // second leaves a window where a crash, a full disk or an AV
+            // scanner holding the handle destroys the take outright. Move
+            // first and the worst case is a leftover part file.
+            File.Move(joined, OutputPath, overwrite: true);
+
+            foreach (var part in parts)
+            {
+                if (string.Equals(part, OutputPath, StringComparison.OrdinalIgnoreCase)) continue;
+                try { File.Delete(part); } catch { /* best effort */ }
+            }
+
+            return OutputPath;
+        }
+        catch (Exception ex)
+        {
+            // Keep the first segment rather than losing the take entirely.
+            LastJoinError = ex.Message;
+            return parts.Count > 0 && File.Exists(parts[0]) ? parts[0] : OutputPath;
+        }
+        finally
+        {
+            try { File.Delete(listFile); } catch { /* best effort */ }
+        }
+    }
+
+    /// <summary>
+    /// Why joining the paused segments failed, if it did. When this is set the
+    /// saved file holds only the footage up to the first pause, and the rest is
+    /// still on disk as .partN.mp4 -- the user has to be told.
+    /// </summary>
+    public string? LastJoinError { get; private set; }
 
     /// <summary>
     /// Mix a captured desktop-audio WAV into a finished recording.
@@ -536,7 +731,11 @@ public sealed class Recorder
             ]);
         }
 
-        args.AddRange(["-movflags", "+faststart", merged]);
+        // The WAV is started before ffmpeg and stopped after it, so it always
+        // runs slightly long; without this the file's duration is the audio's
+        // and players show a tail of frozen last frame. The video is copied,
+        // so this only ever trims the audio.
+        args.AddRange(["-shortest", "-movflags", "+faststart", merged]);
 
         try
         {
@@ -567,9 +766,9 @@ public sealed class Recorder
             }
 
             // Replace the original in place so the user gets one file with the
-            // name they were told about.
-            File.Delete(videoPath);
-            File.Move(merged, videoPath);
+            // name they were told about. Overwrite rather than delete-then-move:
+            // if the move fails after a delete, the take is gone for good.
+            File.Move(merged, videoPath, overwrite: true);
             return videoPath;
         }
         catch
@@ -615,97 +814,85 @@ public sealed class Recorder
     public bool IsPaused { get; private set; }
 
     /// <summary>
-    /// Pause by SUSPENDING every ffmpeg thread.
+    /// Pause by ENDING the current segment.
     ///
-    /// ffmpeg has no pause command -- there is nothing to send on stdin and no
-    /// signal that means "hold". Suspending the process stops it reading frames
-    /// entirely, which is exactly what pausing means for a live capture, and it
-    /// resumes byte-for-byte where it left off.
+    /// Suspending ffmpeg's threads was the obvious approach and produces a
+    /// visibly frozen image for the pause duration: ddagrab's timestamps come
+    /// from lavfi's clock, which keeps running while the process is suspended,
+    /// so the gap is filled with duplicates of the last frame rather than
+    /// removed. Measured, not assumed -- a paused take played back with a
+    /// motionless stretch exactly as long as the pause.
     ///
-    /// The elapsed clock subtracts paused time so the timer matches the
-    /// recording's real duration rather than wall time. ddagrab timestamps come
-    /// from the capture itself, so the paused span simply does not appear in
-    /// the file.
+    /// Closing the segment cleanly and opening a new one on resume is the only
+    /// way the paused span genuinely does not exist in the output. The segments
+    /// are concatenated on stop, which is a stream copy: lossless and fast.
     /// </summary>
-    public bool Pause()
+    public async Task<bool> PauseAsync()
     {
         if (_proc is null || IsPaused || _proc.HasExited) return false;
-        if (!SetSuspended(_proc, true)) return false;
 
+        // Finish the segment properly so it has a moov atom and can be
+        // concatenated; killing it would leave an unplayable fragment.
+        var finished = await StopProcessAsync();
+        if (!finished) return false;
+
+        _segments.Add(_currentSegment);
         _pausedAt = DateTime.UtcNow;
         IsPaused = true;
         return true;
     }
 
-    public bool Resume()
+    public async Task<bool> ResumeAsync()
     {
-        if (_proc is null || !IsPaused || _proc.HasExited) return false;
-        if (!SetSuspended(_proc, false)) return false;
+        if (!IsPaused || _resumeOptions is null) return false;
+
+        // A new segment file; the old ones are joined on stop.
+        var next = NextSegmentPath();
+
+        try
+        {
+            await StartProcessAsync(_resumeOptions with { OutputPath = next });
+        }
+        catch
+        {
+            // Stay paused and leave the clock untouched. Crediting the pause
+            // before knowing the restart worked meant a failed resume followed
+            // by a successful one counted the same span twice, and a pause
+            // longer than the footage drove Elapsed negative -- the timer then
+            // rendered as "-1:-30".
+            try { if (File.Exists(next)) File.Delete(next); } catch { /* best effort */ }
+            return false;
+        }
 
         _pausedTotal += DateTime.UtcNow - _pausedAt;
         IsPaused = false;
+        _currentSegment = next;
         return true;
     }
 
-    /// <summary>
-    /// Suspend or resume every thread in a process.
-    ///
-    /// NtSuspendProcess would be one call, but it is undocumented; iterating the
-    /// thread list uses only documented API and behaves the same. Resume counts
-    /// are nested, so ResumeThread is called until the count reaches zero --
-    /// otherwise a thread suspended twice stays suspended.
-    /// </summary>
-    private static bool SetSuspended(Process process, bool suspend)
-    {
-        var any = false;
-
-        foreach (ProcessThread thread in process.Threads)
-        {
-            var handle = OpenThread(THREAD_SUSPEND_RESUME, false, (uint)thread.Id);
-            if (handle == IntPtr.Zero) continue;
-
-            try
-            {
-                if (suspend)
-                {
-                    any |= SuspendThread(handle) != unchecked((uint)-1);
-                }
-                else
-                {
-                    while (ResumeThread(handle) > 1) { }
-                    any = true;
-                }
-            }
-            finally
-            {
-                CloseHandle(handle);
-            }
-        }
-
-        return any;
-    }
-
-    private const int THREAD_SUSPEND_RESUME = 0x0002;
-
-    [DllImport("kernel32.dll")]
-    private static extern IntPtr OpenThread(int access, bool inherit, uint threadId);
-
-    [DllImport("kernel32.dll")]
-    private static extern uint SuspendThread(IntPtr thread);
-
-    [DllImport("kernel32.dll")]
-    private static extern int ResumeThread(IntPtr thread);
-
-    [DllImport("kernel32.dll")]
-    private static extern bool CloseHandle(IntPtr handle);
 
     public async Task CancelAsync()
     {
-        if (_proc is null) return;
+        // A paused take has no process -- returning early here meant cancelling
+        // while paused did nothing at all: no teardown, no cleanup, and the
+        // recorder stayed IsPaused with stale segments that the next take then
+        // orphaned on disk.
+        if (_proc is null && !IsPaused) return;
+
         var file = OutputPath;
+        var parts = _segments.ToList();
 
         try { await StopAsync(); } catch { /* best effort */ }
-        try { if (File.Exists(file)) File.Delete(file); } catch { /* best effort */ }
+
+        foreach (var path in parts.Append(file).Append(_currentSegment).Distinct())
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch { /* best effort */ }
+        }
+
+        _segments.Clear();
+        _currentSegment = "";
+        _resumeOptions = null;
+        IsPaused = false;
     }
 
     /// <summary>

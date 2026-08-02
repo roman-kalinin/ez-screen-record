@@ -431,7 +431,15 @@ public sealed class LayoutStageControl : UserControl
 
     private Windows.Media.Capture.Frames.MediaFrameReader? _frameReader;
     private readonly Microsoft.UI.Xaml.Media.Imaging.SoftwareBitmapSource _cameraFrames = new();
-    private bool _frameBusy;
+    /// <summary>
+    /// Earliest tick at which another frame may be handed to the UI thread.
+    /// A deadline rather than a busy flag: a flag is never cleared if the UI
+    /// thread is inside a modal loop (a window drag, a resize), so every later
+    /// frame is dropped and the preview freezes for good.
+    /// </summary>
+    private long _frameBusyUntil;
+
+    private const int FrameTimeoutMs = 250;
 
     /// <summary>
     /// Copy the newest camera frame into the preview.
@@ -444,7 +452,8 @@ public sealed class LayoutStageControl : UserControl
     private void OnCameraFrame(
         Windows.Media.Capture.Frames.MediaFrameReader sender, object args)
     {
-        if (_frameBusy) return;
+        var now = Environment.TickCount64;
+        if (now < _frameBusyUntil) return;
 
         using var frame = sender.TryAcquireLatestFrame();
         var bitmap = frame?.VideoMediaFrame?.SoftwareBitmap;
@@ -460,7 +469,7 @@ public sealed class LayoutStageControl : UserControl
                     Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
                     Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied);
 
-        _frameBusy = true;
+        _frameBusyUntil = now + FrameTimeoutMs;
         var queued = DispatcherQueue.TryEnqueue(async () =>
         {
             try
@@ -474,11 +483,11 @@ public sealed class LayoutStageControl : UserControl
             }
             finally
             {
-                _frameBusy = false;
+                _frameBusyUntil = 0;
             }
         });
 
-        if (!queued) _frameBusy = false;
+        if (!queued) _frameBusyUntil = 0;
     }
 
     private void StopCamera()

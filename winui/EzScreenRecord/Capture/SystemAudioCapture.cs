@@ -106,6 +106,33 @@ public sealed class SystemAudioCapture : IAsyncDisposable
     }
 
     /// <summary>
+    /// Stop feeding the file without finalising it, and resume again later.
+    ///
+    /// Pause drops the paused span from the video by ending one ffmpeg segment
+    /// and starting another, so the audio has to lose exactly the same span. A
+    /// graph left running through a pause produces a WAV longer than the video
+    /// by the pause duration, and every later sound lands early by that much --
+    /// cumulative across pauses, so a few pauses put speech seconds out of sync.
+    ///
+    /// AudioGraph.Stop only halts the quantum pump; the output node keeps its
+    /// buffer and file handle, so Start resumes appending. Finalisation happens
+    /// once, in StopAsync.
+    /// </summary>
+    public void Pause()
+    {
+        if (_graph is null || IsPaused) return;
+        try { _graph.Stop(); IsPaused = true; } catch { /* already torn down */ }
+    }
+
+    public void Resume()
+    {
+        if (_graph is null || !IsPaused) return;
+        try { _graph.Start(); IsPaused = false; } catch { /* already torn down */ }
+    }
+
+    public bool IsPaused { get; private set; }
+
+    /// <summary>
     /// Stop and finalise the WAV. Must be awaited before ffmpeg reads the file:
     /// the header is only written on finalisation, so a file read too early is
     /// unusable.

@@ -54,6 +54,12 @@ public sealed partial class MainWindow : Window
         SetupHotkeys();
         _ = RestoreSourceAsync();
 
+        // A take killed mid-recording leaves .part/.joined/.mixed files sitting
+        // in the output folder, named like real recordings. Nothing else ever
+        // removes them, so they pile up.
+        try { Capture.Recorder.CleanOrphans(Models.AppSettings.DefaultOutputDir); }
+        catch { /* never block startup on housekeeping */ }
+
         Closed += (_, _) =>
         {
             _hotkeys?.Dispose();
