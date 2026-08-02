@@ -243,13 +243,9 @@ public sealed class ToolbarWindow : Window
         Win32.SetWindowPos(Hwnd, Win32.HWND_TOPMOST, 0, 0, 0, 0,
             Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE);
 
-        // Round the WINDOW, so the corners are actually round instead of the
-        // bar being drawn round over an opaque black window. DWMWCP_ROUND is
-        // the same treatment Windows 11 gives ordinary windows, so the bar
-        // matches the rest of the system.
-        var round = 2; // DWMWCP_ROUND
-        Win32.DwmSetWindowAttributeInt(Hwnd, Win32.DWMWA_WINDOW_CORNER_PREFERENCE,
-            ref round, sizeof(int));
+        // Borderless with rounded corners: the bar's own fill is the visible
+        // shape, and DWM rounds the window the way Windows 11 rounds any other.
+        Win32.MakeBorderless(Hwnd, rounded: true);
     }
 
     public void SetElapsed(string text) => _timer.Text = text;

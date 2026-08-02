@@ -295,6 +295,15 @@ public sealed partial class MainWindow
         // once the take is running.
         CloseOverlay();
 
+        // Show the on-screen camera bubble when that path is selected.
+        //
+        // This is the DEFAULT (ShowOnScreen is true), and it was never wired
+        // up: the ffmpeg composite above is skipped whenever ShowOnScreen is
+        // set, and nothing created the bubble, so the camera reached the
+        // recording by neither route and simply did not appear.
+        if (camera is null && Settings.Camera is { Enabled: true, ShowOnScreen: true })
+            ShowCameraBubble();
+
         // Show the toolbar BEFORE ffmpeg starts: otherwise the first frames of
         // the recording contain the toolbar animating in at 00:00.
         ShowToolbar();
@@ -309,6 +318,7 @@ public sealed partial class MainWindow
         catch (Exception ex)
         {
             HideToolbar();
+            HideCameraBubble();
             _ = _stage?.StartPreviewsAsync();
             Toast("Could not start recording", ex.Message, ToastKind.Error);
             SetState(RecordingState.Idle);
@@ -349,6 +359,7 @@ public sealed partial class MainWindow
         finally
         {
             HideToolbar();
+            HideCameraBubble();
             CloseOverlay();
             SetState(RecordingState.Idle);
             ElapsedLabel.Text = "00:00";
@@ -391,6 +402,38 @@ public sealed partial class MainWindow
     }
 
     // --- Toolbar ------------------------------------------------------------
+
+    // --- On-screen camera bubble --------------------------------------------
+
+    private CameraBubbleWindow? _bubble;
+
+    /// <summary>
+    /// The webcam as a real window on the desktop, which the screen capture
+    /// picks up like anything else.
+    ///
+    /// This is the default because of frame rate, not looks: compositing the
+    /// camera through libplacebo's framesync'd blend paces the whole graph off
+    /// the webcam, so a 30fps camera drags a 60fps take down to ~21 unique fps.
+    /// </summary>
+    private async void ShowCameraBubble()
+    {
+        if (_bubble is not null) return;
+
+        // The stage preview holds the camera; one process cannot open it twice.
+        _stage?.StopPreviews();
+
+        _bubble = new CameraBubbleWindow(Settings);
+        _bubble.Activate();
+        await _bubble.StartPreviewAsync();
+    }
+
+    private void HideCameraBubble()
+    {
+        if (_bubble is null) return;
+        _bubble.Cleanup();
+        _bubble.Close();
+        _bubble = null;
+    }
 
     private ToolbarWindow? _toolbar;
 

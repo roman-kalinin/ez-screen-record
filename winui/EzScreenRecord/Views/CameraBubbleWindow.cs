@@ -32,8 +32,46 @@ public sealed class CameraBubbleWindow : Window
 {
     private readonly AppSettings _settings;
     private readonly Border _frame;
-    private readonly MediaPlayerElement _preview;
+    private readonly Image _preview;
+    private readonly Microsoft.UI.Xaml.Media.Imaging.SoftwareBitmapSource _frames = new();
+    private Windows.Media.Capture.Frames.MediaFrameReader? _frameReader;
+    private bool _frameBusy;
     private MediaCapture? _capture;
+
+    /// <summary>
+    /// Copy the newest camera frame into the bubble. Frames arrive on a worker
+    /// thread; drawing is marshalled to the UI thread and dropped while a
+    /// previous frame is still in flight, so a busy UI falls behind rather than
+    /// queueing.
+    /// </summary>
+    private void OnFrame(Windows.Media.Capture.Frames.MediaFrameReader sender, object args)
+    {
+        if (_frameBusy) return;
+
+        using var frame = sender.TryAcquireLatestFrame();
+        var bitmap = frame?.VideoMediaFrame?.SoftwareBitmap;
+        if (bitmap is null) return;
+
+        // SoftwareBitmapSource requires BGRA8 premultiplied.
+        var converted =
+            bitmap.BitmapPixelFormat == Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8 &&
+            bitmap.BitmapAlphaMode == Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied
+                ? bitmap
+                : Windows.Graphics.Imaging.SoftwareBitmap.Convert(
+                    bitmap,
+                    Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
+                    Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied);
+
+        _frameBusy = true;
+        var queued = DispatcherQueue.TryEnqueue(async () =>
+        {
+            try { await _frames.SetBitmapAsync(converted); }
+            catch { /* the window closed mid-frame */ }
+            finally { _frameBusy = false; }
+        });
+
+        if (!queued) _frameBusy = false;
+    }
 
     private bool _dragging;
     private Point _dragStart;
@@ -45,17 +83,22 @@ public sealed class CameraBubbleWindow : Window
 
         Title = "Camera";
 
-        // MediaPlayerElement fed from a MediaFrameSource.
-        //
-        // UWP's CaptureElement, which would bind straight to a MediaCapture,
-        // does NOT exist in WinUI 3 -- this is the supported replacement.
-        _preview = new MediaPlayerElement { Stretch = Stretch.UniformToFill };
+        // An Image fed by a MediaFrameReader. See StartPreviewAsync for why
+        // MediaPlayerElement is not used.
+        _preview = new Image
+        {
+            Stretch = Stretch.UniformToFill,
+            Source = _frames,
+        };
 
         _frame = new Border
         {
             Child = _preview,
-            BorderBrush = new SolidColorBrush(Colors.White),
-            BorderThickness = new Thickness(2),
+            // No border. This bubble is recorded as part of the desktop, so a
+            // white ring around the webcam ends up burned into the video. The
+            // Electron original draws its selection frame only on hover, never
+            // permanently.
+            BorderThickness = new Thickness(0),
         };
         _frame.PointerPressed += OnPointerPressed;
         _frame.PointerMoved += OnPointerMoved;
@@ -73,6 +116,10 @@ public sealed class CameraBubbleWindow : Window
         presenter.IsAlwaysOnTop = true;
 
         AppWindow.IsShownInSwitchers = false;
+
+        // No system frame: this window is recorded as part of the desktop, so
+        // any frame Windows draws is burned into the video.
+        Win32.MakeBorderless(Hwnd, rounded: false);
 
         ApplyShape();
         PositionFromSettings();
@@ -138,12 +185,18 @@ public sealed class CameraBubbleWindow : Window
                 }
             }
 
-            if (source is not null)
-            {
-                _preview.Source = Windows.Media.Core.MediaSource
-                    .CreateFromMediaFrameSource(source);
-                _preview.AutoPlay = true;
-            }
+            if (source is null) return;
+
+            // A MediaFrameReader painting into a SoftwareBitmapSource, NOT
+            // MediaPlayerElement + MediaSource.CreateFromMediaFrameSource.
+            // The latter is the documented shape and silently renders nothing:
+            // MediaCapture opens the device without error and the element stays
+            // blank, so the bubble appeared in recordings as a black rectangle
+            // with a white border and no picture.
+            _frameReader = await _capture.CreateFrameReaderAsync(
+                source, Windows.Media.MediaProperties.MediaEncodingSubtypes.Bgra8);
+            _frameReader.FrameArrived += OnFrame;
+            await _frameReader.StartAsync();
         }
         catch
         {
@@ -234,6 +287,17 @@ public sealed class CameraBubbleWindow : Window
 
     public void Cleanup()
     {
+        // Stop the reader before disposing the capture: a reader still
+        // delivering frames from a disposed MediaCapture throws on the frame
+        // thread, where nothing can catch it.
+        if (_frameReader is not null)
+        {
+            _frameReader.FrameArrived -= OnFrame;
+            try { _frameReader.StopAsync().AsTask().Wait(500); } catch { /* already stopping */ }
+            try { _frameReader.Dispose(); } catch { /* already gone */ }
+            _frameReader = null;
+        }
+
         try { _capture?.Dispose(); } catch { /* already gone */ }
         _capture = null;
     }

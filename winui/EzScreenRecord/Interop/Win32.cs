@@ -28,6 +28,19 @@ internal static partial class Win32
     internal const int WS_POPUP = unchecked((int)0x80000000);
     internal const int WS_VISIBLE = 0x10000000;
 
+    // Frame styles. A borderless window must clear these or the system draws
+    // its own 1px frame, which also suppresses DWM's rounded corners.
+    internal const int WS_BORDER = 0x00800000;
+    internal const int WS_DLGFRAME = 0x00400000;
+    internal const int WS_THICKFRAME = 0x00040000;
+
+    internal const int WS_EX_WINDOWEDGE = 0x00000100;
+    internal const int WS_EX_CLIENTEDGE = 0x00000200;
+    internal const int WS_EX_STATICEDGE = 0x00020000;
+    internal const int WS_EX_DLGMODALFRAME = 0x00000001;
+
+    internal const uint SWP_FRAMECHANGED = 0x0020;
+
     // --- ShowWindow ---------------------------------------------------------
 
     internal const int SW_HIDE = 0;
@@ -255,4 +268,38 @@ internal static partial class Win32
 
     internal static bool HasExStyle(IntPtr hWnd, int bits)
         => ((long)GetWindowLongPtr(hWnd, GWL_EXSTYLE) & (uint)bits) != 0;
+
+    /// <summary>Remove ordinary style bits without disturbing the rest.</summary>
+    internal static void RemoveStyle(IntPtr hWnd, int bits)
+    {
+        var cur = (long)GetWindowLongPtr(hWnd, GWL_STYLE);
+        SetWindowLongPtr(hWnd, GWL_STYLE, new IntPtr(cur & ~(long)(uint)bits));
+    }
+
+    /// <summary>
+    /// Make a window genuinely borderless, and optionally round its corners.
+    ///
+    /// WinUI's SetBorderAndTitleBar(false, false) leaves WS_DLGFRAME and
+    /// WS_EX_WINDOWEDGE behind. Those draw the system's own 1px frame -- the
+    /// pale outline that appeared around the toolbar and the camera bubble --
+    /// and they also suppress DWM's rounded corners, so DWMWCP_ROUND reads back
+    /// as applied while the corners stay square.
+    ///
+    /// SWP_FRAMECHANGED matters: without it the old frame is kept until
+    /// something else resizes the window.
+    /// </summary>
+    internal static void MakeBorderless(IntPtr hWnd, bool rounded)
+    {
+        RemoveStyle(hWnd, WS_DLGFRAME | WS_BORDER | WS_THICKFRAME);
+        RemoveExStyle(hWnd, WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE
+            | WS_EX_STATICEDGE | WS_EX_DLGMODALFRAME);
+
+        SetWindowPos(hWnd, IntPtr.Zero, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+        // 2 = DWMWCP_ROUND, 1 = DWMWCP_DONOTROUND.
+        var preference = rounded ? 2 : 1;
+        DwmSetWindowAttributeInt(hWnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+            ref preference, sizeof(int));
+    }
 }
