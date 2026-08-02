@@ -293,6 +293,16 @@ public sealed class LayoutStageControl : UserControl
         Layout();
     }
 
+    /// <summary>Drop the capture source and return to the empty state.</summary>
+    public void ClearSource()
+    {
+        _source = null;
+        _screenTimer?.Stop();
+        _screenTimer = null;
+        _screen.Source = null;
+        _placeholder.Visibility = Visibility.Visible;
+    }
+
     public async Task SetSourceAsync(CaptureSourceChoice source)
     {
         _source = source;

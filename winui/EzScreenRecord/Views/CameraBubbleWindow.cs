@@ -103,6 +103,7 @@ public sealed class CameraBubbleWindow : Window
         _frame.PointerPressed += OnPointerPressed;
         _frame.PointerMoved += OnPointerMoved;
         _frame.PointerReleased += OnPointerReleased;
+        _frame.SizeChanged += (_, _) => ApplyShape();
 
         Content = _frame;
 
@@ -144,15 +145,36 @@ public sealed class CameraBubbleWindow : Window
             Math.Max(60, (int)(r.H * work.Height))));
     }
 
-    private void ApplyShape()
+    /// <summary>
+    /// Apply shape and mirroring. Public so the owner can re-apply it while a
+    /// take is running: the camera's shape, mirror and position are all
+    /// editable mid-recording, and this was previously constructor-only, so the
+    /// bubble stayed frozen at whatever it looked like when recording started.
+    /// </summary>
+    public void ApplyShape()
     {
-        var r = _settings.Camera.Rect;
-        var side = Math.Min(r.W, r.H) * 400;
+        var size = AppWindow.Size;
         _frame.CornerRadius = _settings.Camera.Shape switch
         {
-            OverlayShape.Circle => new CornerRadius(side / 2),
+            OverlayShape.Circle => new CornerRadius(Math.Min(size.Width, size.Height) / 2.0),
             OverlayShape.Rounded => new CornerRadius(16),
             _ => new CornerRadius(0),
+        };
+
+        // Mirror the bubble, not the image inside it: UniformToFill makes the
+        // image wider than the frame, so flipping about the image's own centre
+        // pushes it sideways out of view. This was missing entirely -- the
+        // preview mirrored, the recording did not.
+        _frame.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5);
+        _frame.RenderTransform = _settings.Camera.Mirrored
+            ? new Microsoft.UI.Xaml.Media.ScaleTransform { ScaleX = -1 }
+            : null;
+
+        // Clip to the frame: a Border does not clip its child, so the
+        // deliberately-oversized feed would otherwise spill past the shape.
+        _frame.Clip = new Microsoft.UI.Xaml.Media.RectangleGeometry
+        {
+            Rect = new Windows.Foundation.Rect(0, 0, _frame.ActualWidth, _frame.ActualHeight),
         };
     }
 

@@ -282,6 +282,7 @@ make distclean >/dev/null 2>&1 || true
   --enable-filter=volume \
   --enable-filter=aformat \
   --enable-filter=mpdecimate \
+  --enable-filter=colorchannelmixer \
   \
   --enable-encoder=h264_nvenc \
   --enable-encoder=hevc_nvenc \

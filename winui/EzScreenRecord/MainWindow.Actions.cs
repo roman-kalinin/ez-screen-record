@@ -102,6 +102,15 @@ public sealed partial class MainWindow
 
         panel.Children.Add(new MenuFlyoutSeparator());
 
+        // State what the recorder cannot do, rather than leaving the gap for
+        // the user to discover in a finished file.
+        panel.Children.Add(Heading("Not yet supported"));
+        panel.Children.Add(Caption(
+            "System audio is not captured — only the microphone. Pause is unavailable; " +
+            "ffmpeg cannot pause a running encode."));
+
+        panel.Children.Add(new MenuFlyoutSeparator());
+
         panel.Children.Add(Heading("Save to"));
         _outputDirLabel = Caption(Settings.Recording.OutputDir ?? AppSettings.DefaultOutputDir);
         _outputDirLabel.TextTrimming = TextTrimming.CharacterEllipsis;
@@ -150,7 +159,6 @@ public sealed partial class MainWindow
         var rows = new (string Key, string Action)[]
         {
             ("F9", "Record / stop"),
-            ("F10", "Pause / resume"),
             ("F8", "Draw"),
             ("Ctrl+Shift+X", "Erase all"),
         };

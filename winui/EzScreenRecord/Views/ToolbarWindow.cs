@@ -121,7 +121,7 @@ public sealed class ToolbarWindow : Window
         };
         content.Children.Add(_timer);
 
-        content.Children.Add(Round(Glyphs.Pause, "Pause", () => PauseRequested?.Invoke()));
+        // No Pause button: ffmpeg cannot pause a running encode.
 
         var stop = new Button
         {

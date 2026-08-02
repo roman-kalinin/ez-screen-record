@@ -317,8 +317,21 @@ public sealed class Recorder
             var pw = (int)Math.Round(r.W * canvasW);
             var ph = (int)Math.Round(r.H * canvasH);
 
+            // Opacity was plumbed through two layers and then ignored here, so
+            // a semi-transparent overlay always recorded fully opaque.
+            // colorchannelmixer scales the alpha channel.
+            //
+            // Guarded on the filter being present: it is skipped by
+            // --disable-everything unless explicitly enabled, and emitting a
+            // filter this ffmpeg lacks would fail the WHOLE take rather than
+            // just ignoring the opacity. Skipped at 1.0 so the common case
+            // costs nothing either way.
+            var fade = img.Opacity < 1.0 && FfmpegLocator.HasFilter("colorchannelmixer")
+                ? $"colorchannelmixer=aa={Fmt(Math.Clamp(img.Opacity, 0, 1))},"
+                : "";
+
             chains.Add(
-                $"[{imageIdxs[i]}:v]format=yuva420p,hwupload," +
+                $"[{imageIdxs[i]}:v]format=yuva420p,{fade}hwupload," +
                 $"libplacebo@img{i}=w={canvasW}:h={canvasH}:fit_mode=none:" +
                 $"pos_x={px}:pos_y={py}:pos_w={pw}:pos_h={ph}:fillcolor=black@0[img{i}]");
             layers.Add($"[img{i}]");

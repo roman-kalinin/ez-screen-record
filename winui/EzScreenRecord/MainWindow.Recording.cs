@@ -17,6 +17,36 @@ public sealed partial class MainWindow
     private DispatcherTimer? _elapsedTimer;
     private CancellationTokenSource? _countdownCts;
 
+    /// <summary>
+    /// Handle an ffmpeg death mid-take.
+    ///
+    /// Subscribed once, from the window's constructor. Without it the app stays
+    /// in Recording forever after a crash: the timer keeps climbing, the
+    /// toolbar keeps showing a rising clock, nothing is being written, and Stop
+    /// then throws "No recording is running." The recorder already builds a
+    /// readable explanation from ffmpeg's stderr -- nothing was listening for
+    /// it.
+    /// </summary>
+    private void WireRecorderFailure() => _recorder.Failed += reason =>
+        DispatcherQueue.TryEnqueue(async () =>
+        {
+            // A clean stop also raises this if ffmpeg exits non-zero; only act
+            // while a take is supposed to be running.
+            if (_state is not RecordingState.Recording) return;
+
+            _elapsedTimer?.Stop();
+            _elapsedTimer = null;
+
+            HideToolbar();
+            HideCameraBubble();
+            CloseOverlay();
+            SetState(RecordingState.Idle);
+            ElapsedLabel.Text = "00:00";
+            await (_stage?.StartPreviewsAsync() ?? Task.CompletedTask);
+
+            Toast("Recording stopped unexpectedly", reason, ToastKind.Error);
+        });
+
     // --- Source -------------------------------------------------------------
 
     private async Task RestoreSourceAsync()
@@ -55,7 +85,23 @@ public sealed partial class MainWindow
     {
         var dialog = new SourceDialog(_source) { XamlRoot = Content.XamlRoot };
         await dialog.ShowAsync();
-        if (dialog.Selected is not null) await ApplySourceAsync(dialog.Selected);
+
+        if (dialog.Selected is not null)
+        {
+            await ApplySourceAsync(dialog.Selected);
+            return;
+        }
+
+        // "Clear selection" must actually clear it. Testing only Selected made
+        // that button indistinguishable from Cancel, since clearing sets
+        // Selected to null too.
+        if (dialog.Cleared)
+        {
+            _source = null;
+            Settings.Recording.ScreenSourceId = null;
+            Settings.Save();
+            _stage?.ClearSource();
+        }
     }
 
     private async Task OnAddImageAsync()
@@ -197,7 +243,6 @@ public sealed partial class MainWindow
                 return;
 
             case RecordingState.Recording:
-            case RecordingState.Paused:
                 await StopRecordingAsync();
                 return;
 
@@ -367,24 +412,18 @@ public sealed partial class MainWindow
         }
     }
 
-    private void TogglePause()
-        => Toast("Pause is not implemented yet",
-            "ffmpeg has no pause; it needs process suspension and timestamp stitching.",
-            ToastKind.Info);
 
     /// <summary>Drive every state-dependent piece of chrome from one place.</summary>
     private void SetState(RecordingState state)
     {
         _state = state;
 
-        var recording = state is RecordingState.Recording or RecordingState.Paused;
+        var recording = state is RecordingState.Recording;
 
         RecDot.Visibility = recording ? Visibility.Visible : Visibility.Collapsed;
         if (recording) RecPulse.Begin(); else RecPulse.Stop();
 
         ElapsedLabel.Visibility = recording ? Visibility.Visible : Visibility.Collapsed;
-        if (_pauseButton is not null)
-            _pauseButton.Visibility = recording ? Visibility.Visible : Visibility.Collapsed;
 
         // Drawing is only offered during a take, matching Electron.
         if (_drawButton is not null)
@@ -443,7 +482,6 @@ public sealed partial class MainWindow
 
         _toolbar = new ToolbarWindow(Settings);
         _toolbar.StopRequested += () => DispatcherQueue.TryEnqueue(async () => await StopRecordingAsync());
-        _toolbar.PauseRequested += () => DispatcherQueue.TryEnqueue(TogglePause);
         _toolbar.DrawRequested += () => DispatcherQueue.TryEnqueue(ToggleDrawing);
         _toolbar.SourceRequested += () => DispatcherQueue.TryEnqueue(OnChooseSource);
         _toolbar.Activate();
@@ -526,7 +564,8 @@ public sealed partial class MainWindow
             switch (action)
             {
                 case HotkeyAction.ToggleRecord: await ToggleRecordAsync(); break;
-                case HotkeyAction.TogglePause: TogglePause(); break;
+                // F10 is registered but unused: see the settings flyout.
+                case HotkeyAction.TogglePause: break;
                 case HotkeyAction.ToggleDraw: ToggleDrawing(); break;
                 case HotkeyAction.ClearDraw: _overlay?.ClearAll(); break;
             }

@@ -12,7 +12,9 @@ using DispatcherTimer = Microsoft.UI.Xaml.DispatcherTimer;
 
 namespace EzScreenRecord;
 
-public enum RecordingState { Idle, Countdown, Recording, Paused, Saving }
+// No Paused state: ffmpeg cannot pause an encode, so nothing could ever set
+// it and every branch testing for it was dead.
+public enum RecordingState { Idle, Countdown, Recording, Saving }
 
 public sealed partial class MainWindow : Window
 {
@@ -21,7 +23,7 @@ public sealed partial class MainWindow : Window
 
     private RecordingState _state = RecordingState.Idle;
     private bool Busy => _state is RecordingState.Countdown or RecordingState.Recording
-        or RecordingState.Paused or RecordingState.Saving;
+        or RecordingState.Saving;
 
     public MainWindow()
     {
@@ -50,6 +52,7 @@ public sealed partial class MainWindow : Window
         BuildStage();
         BuildControlBar();
         RefreshImageList();
+        WireRecorderFailure();
         SetupHotkeys();
         _ = RestoreSourceAsync();
 
@@ -90,12 +93,21 @@ public sealed partial class MainWindow : Window
     {
         _stage = new LayoutStageControl();
         _stage.SetCamera(Settings.Camera);
+        // Camera edits apply live, including mid-take: the bubble is a real
+        // window on the desktop, so moving or reshaping it changes the
+        // recording as it happens. Without pushing to the bubble it stayed
+        // frozen at whatever it looked like when the take started.
         _stage.CameraRectChanged += rect =>
         {
             Settings.Camera.Rect = rect;
+            _bubble?.PositionFromSettings();
             Settings.Save();
         };
-        _stage.CameraShapeChanged += () => Settings.Save();
+        _stage.CameraShapeChanged += () =>
+        {
+            _bubble?.ApplyShape();
+            Settings.Save();
+        };
         StageHost.Content = _stage;
     }
 
@@ -105,7 +117,6 @@ public sealed partial class MainWindow : Window
     private PillControl? _camPill;
     private Button? _drawButton;
     private Button? _recordButton;
-    private Button? _pauseButton;
 
     private void BuildControlBar()
     {
@@ -163,10 +174,10 @@ public sealed partial class MainWindow : Window
         LeftControls.Children.Add(SettingsButton());
         LeftControls.Children.Add(ShortcutsButton());
 
-        // Right group: pause (while recording) then the red transport button.
-        _pauseButton = RoundButton(Glyphs.Pause, "Pause", (_, _) => TogglePause());
-        _pauseButton.Visibility = Visibility.Collapsed;
-        Transport.Children.Add(_pauseButton);
+        // No Pause button. ffmpeg cannot pause a running encode, so offering one
+        // is an affordance for a feature that does not exist -- it was
+        // advertised in three places and implemented in none. The settings
+        // flyout says so explicitly instead.
 
         _recordButton = new Button
         {
@@ -249,6 +260,10 @@ public sealed partial class MainWindow : Window
                 DefaultButton = ContentDialogButton.Close,
             };
             if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+            // "Discard" has to actually discard. Closing alone left the partial
+            // mp4 on disk, so the button did not do what it said.
+            await _recorder.CancelAsync();
         }
 
         Close();

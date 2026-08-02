@@ -90,7 +90,19 @@ public sealed class RecordingSettings
     public string? ScreenSourceId { get; set; }
     public string? MicDeviceName { get; set; }
     public bool MicEnabled { get; set; } = true;
-    public bool SystemAudioEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Capture desktop audio as well as the microphone.
+    ///
+    /// NOT IMPLEMENTED, and deliberately defaulted to false rather than true so
+    /// it does not read as a working feature. Electron gets this from Chromium's
+    /// `chromeMediaSource: 'desktop'` loopback; ffmpeg's dshow backend has no
+    /// equivalent -- it only enumerates real microphones, and this machine has
+    /// no Stereo Mix device -- so it needs a WASAPI loopback capture feeding
+    /// ffmpeg over a pipe. Until that exists the recorder ignores this, and the
+    /// settings UI says so.
+    /// </summary>
+    public bool SystemAudioEnabled { get; set; }
     public int Fps { get; set; } = 30;
     public ResolutionPreset Resolution { get; set; } = ResolutionPreset.Source;
     public int CountdownSeconds { get; set; } = 3;
