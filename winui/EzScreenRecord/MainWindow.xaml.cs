@@ -12,9 +12,7 @@ using DispatcherTimer = Microsoft.UI.Xaml.DispatcherTimer;
 
 namespace EzScreenRecord;
 
-// No Paused state: ffmpeg cannot pause an encode, so nothing could ever set
-// it and every branch testing for it was dead.
-public enum RecordingState { Idle, Countdown, Recording, Saving }
+public enum RecordingState { Idle, Countdown, Recording, Paused, Saving }
 
 public sealed partial class MainWindow : Window
 {
@@ -23,7 +21,7 @@ public sealed partial class MainWindow : Window
 
     private RecordingState _state = RecordingState.Idle;
     private bool Busy => _state is RecordingState.Countdown or RecordingState.Recording
-        or RecordingState.Saving;
+        or RecordingState.Paused or RecordingState.Saving;
 
     public MainWindow()
     {
@@ -117,6 +115,7 @@ public sealed partial class MainWindow : Window
     private PillControl? _camPill;
     private Button? _drawButton;
     private Button? _recordButton;
+    private Button? _pauseButton;
 
     private void BuildControlBar()
     {
@@ -174,10 +173,11 @@ public sealed partial class MainWindow : Window
         LeftControls.Children.Add(SettingsButton());
         LeftControls.Children.Add(ShortcutsButton());
 
-        // No Pause button. ffmpeg cannot pause a running encode, so offering one
-        // is an affordance for a feature that does not exist -- it was
-        // advertised in three places and implemented in none. The settings
-        // flyout says so explicitly instead.
+        // Pause, implemented by suspending ffmpeg's threads: see
+        // Recorder.Pause. Shown only while a take is running.
+        _pauseButton = RoundButton(Glyphs.Pause, "Pause (F10)", (_, _) => TogglePause());
+        _pauseButton.Visibility = Visibility.Collapsed;
+        Transport.Children.Add(_pauseButton);
 
         _recordButton = new Button
         {

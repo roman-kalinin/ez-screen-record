@@ -17,6 +17,9 @@ public sealed partial class MainWindow
     private DispatcherTimer? _elapsedTimer;
     private CancellationTokenSource? _countdownCts;
 
+    private SystemAudioCapture? _systemAudio;
+    private string? _systemAudioPath;
+
     /// <summary>
     /// Handle an ffmpeg death mid-take.
     ///
@@ -32,7 +35,7 @@ public sealed partial class MainWindow
         {
             // A clean stop also raises this if ffmpeg exits non-zero; only act
             // while a take is supposed to be running.
-            if (_state is not RecordingState.Recording) return;
+            if (_state is not (RecordingState.Recording or RecordingState.Paused)) return;
 
             _elapsedTimer?.Stop();
             _elapsedTimer = null;
@@ -243,6 +246,7 @@ public sealed partial class MainWindow
                 return;
 
             case RecordingState.Recording:
+            case RecordingState.Paused:
                 await StopRecordingAsync();
                 return;
 
@@ -349,6 +353,23 @@ public sealed partial class MainWindow
         if (camera is null && Settings.Camera is { Enabled: true, ShowOnScreen: true })
             ShowCameraBubble();
 
+        // Desktop audio, captured by us and muxed in afterwards: ffmpeg has no
+        // WASAPI input on Windows, only dshow, which sees microphones alone.
+        _systemAudioPath = null;
+        if (Settings.Recording.SystemAudioEnabled)
+        {
+            _systemAudio = new SystemAudioCapture();
+            var wav = Path.Combine(Path.GetTempPath(),
+                $"ez-sysaudio-{Guid.NewGuid():N}.wav");
+
+            if (await _systemAudio.StartAsync(wav)) _systemAudioPath = wav;
+            else
+            {
+                Toast("System audio unavailable", _systemAudio.LastError, ToastKind.Info);
+                _systemAudio = null;
+            }
+        }
+
         // Show the toolbar BEFORE ffmpeg starts: otherwise the first frames of
         // the recording contain the toolbar animating in at 00:00.
         ShowToolbar();
@@ -394,6 +415,27 @@ public sealed partial class MainWindow
         try
         {
             var path = await _recorder.StopAsync();
+
+            // Fold in the desktop audio, if it was captured. Done after the
+            // take rather than as a live ffmpeg input so a stall in our audio
+            // path can never affect video timing.
+            if (_systemAudio is not null)
+            {
+                var wav = await _systemAudio.StopAsync();
+                _systemAudio = null;
+
+                if (wav is not null && File.Exists(wav))
+                {
+                    path = await Recorder.MuxSystemAudioAsync(path, wav);
+                    try { File.Delete(wav); } catch { /* best effort */ }
+
+                    // Say so rather than silently saving without desktop audio,
+                    // which looks identical to never having captured it.
+                    if (Recorder.LastMuxError is { } muxError)
+                        Toast("System audio could not be merged", muxError, ToastKind.Error);
+                }
+            }
+
             Toast("Recording saved", Path.GetFileName(path), ToastKind.Success,
                 "Show in folder", () => RevealFile(path));
         }
@@ -414,11 +456,45 @@ public sealed partial class MainWindow
 
 
     /// <summary>Drive every state-dependent piece of chrome from one place.</summary>
+    private void TogglePause()
+    {
+        if (_state is not (RecordingState.Recording or RecordingState.Paused)) return;
+
+        if (_recorder.IsPaused)
+        {
+            if (!_recorder.Resume())
+            {
+                Toast("Could not resume", null, ToastKind.Error);
+                return;
+            }
+            SetState(RecordingState.Recording);
+        }
+        else
+        {
+            if (!_recorder.Pause())
+            {
+                Toast("Could not pause", null, ToastKind.Error);
+                return;
+            }
+            SetState(RecordingState.Paused);
+        }
+
+        _toolbar?.SetPaused(_recorder.IsPaused);
+
+        if (_pauseButton is not null)
+        {
+            ((FontIcon)_pauseButton.Content).Glyph =
+                _recorder.IsPaused ? Glyphs.Play : Glyphs.Pause;
+            ToolTipService.SetToolTip(_pauseButton,
+                _recorder.IsPaused ? "Resume (F10)" : "Pause (F10)");
+        }
+    }
+
     private void SetState(RecordingState state)
     {
         _state = state;
 
-        var recording = state is RecordingState.Recording;
+        var recording = state is RecordingState.Recording or RecordingState.Paused;
 
         RecDot.Visibility = recording ? Visibility.Visible : Visibility.Collapsed;
         if (recording) RecPulse.Begin(); else RecPulse.Stop();
@@ -462,6 +538,11 @@ public sealed partial class MainWindow
         _stage?.StopPreviews();
 
         _bubble = new CameraBubbleWindow(Settings);
+
+        // Dragging or resizing the bubble is the live edit path during a take;
+        // mirror it back into the preview so the two never disagree.
+        _bubble.GeometryChanged += () => _stage?.SetCamera(Settings.Camera);
+
         _bubble.Activate();
         await _bubble.StartPreviewAsync();
     }
@@ -482,18 +563,29 @@ public sealed partial class MainWindow
 
         _toolbar = new ToolbarWindow(Settings);
         _toolbar.StopRequested += () => DispatcherQueue.TryEnqueue(async () => await StopRecordingAsync());
+        _toolbar.PauseRequested += () => DispatcherQueue.TryEnqueue(TogglePause);
         _toolbar.DrawRequested += () => DispatcherQueue.TryEnqueue(ToggleDrawing);
         _toolbar.SourceRequested += () => DispatcherQueue.TryEnqueue(OnChooseSource);
         _toolbar.Activate();
 
         if (Settings.Recording.HideToolbarFromCapture && !_toolbar.ApplyCaptureExclusion())
             Toast("The toolbar could not be hidden from the recording", null, ToastKind.Error);
+
+        // The toolbar replaces the main window for the duration of the take,
+        // as in Electron: the control panel has no place on screen while you
+        // are recording, and it would otherwise sit in the middle of whatever
+        // is being demonstrated.
+        AppWindow.Hide();
     }
 
     private void HideToolbar()
     {
         _toolbar?.Close();
         _toolbar = null;
+
+        // Bring the control panel back; it was hidden for the take.
+        AppWindow.Show();
+        Win32.SetForegroundWindow(WinRT.Interop.WindowNative.GetWindowHandle(this));
     }
 
     // --- Drawing overlay ----------------------------------------------------
@@ -564,8 +656,7 @@ public sealed partial class MainWindow
             switch (action)
             {
                 case HotkeyAction.ToggleRecord: await ToggleRecordAsync(); break;
-                // F10 is registered but unused: see the settings flyout.
-                case HotkeyAction.TogglePause: break;
+                case HotkeyAction.TogglePause: TogglePause(); break;
                 case HotkeyAction.ToggleDraw: ToggleDrawing(); break;
                 case HotkeyAction.ClearDraw: _overlay?.ClearAll(); break;
             }

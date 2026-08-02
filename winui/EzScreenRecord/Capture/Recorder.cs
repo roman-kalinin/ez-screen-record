@@ -67,9 +67,19 @@ public sealed class Recorder
 
     public bool IsRecording => _proc is { HasExited: false };
 
-    public TimeSpan Elapsed => StartedAt == default
-        ? TimeSpan.Zero
-        : DateTime.UtcNow - StartedAt;
+    /// <summary>
+    /// Recorded duration, excluding time spent paused — so the timer matches
+    /// the finished file rather than wall-clock time since Start.
+    /// </summary>
+    public TimeSpan Elapsed
+    {
+        get
+        {
+            if (StartedAt == default) return TimeSpan.Zero;
+            var now = IsPaused ? _pausedAt : DateTime.UtcNow;
+            return now - StartedAt - _pausedTotal;
+        }
+    }
 
     /// <summary>Raised when ffmpeg exits on its own, i.e. a mid-take failure.</summary>
     public event Action<string>? Failed;
@@ -134,6 +144,9 @@ public sealed class Recorder
         AssignToJob(_proc);
         _proc.BeginErrorReadLine();
         StartedAt = DateTime.UtcNow;
+
+        IsPaused = false;
+        _pausedTotal = TimeSpan.Zero;
 
         // Surface an immediate failure (bad device, missing filter) rather than
         // letting the caller believe recording is under way. 1.8s is what the
@@ -447,6 +460,11 @@ public sealed class Recorder
     {
         var proc = _proc ?? throw new InvalidOperationException("No recording is running.");
 
+        // A suspended process cannot read 'q' from stdin or flush its muxer, so
+        // stopping while paused would hang until the kill timeout and leave an
+        // unplayable file. Resume first, then stop normally.
+        if (IsPaused) Resume();
+
         try
         {
             await proc.StandardInput.WriteAsync('q');
@@ -472,6 +490,214 @@ public sealed class Recorder
         StartedAt = default;
         return OutputPath;
     }
+
+    /// <summary>
+    /// Mix a captured desktop-audio WAV into a finished recording.
+    ///
+    /// Video and any microphone track are stream-copied, so this is a remux
+    /// rather than a re-encode: near-instant and lossless. When the file
+    /// already has a mic track the two are mixed with amix; otherwise the WAV
+    /// simply becomes the audio track.
+    ///
+    /// Returns the original path on any failure -- a recording that lacks
+    /// desktop audio is far better than no recording at all.
+    /// </summary>
+    /// <summary>Why the last system-audio mux failed, if it did.</summary>
+    public static string? LastMuxError { get; private set; }
+
+    public static async Task<string> MuxSystemAudioAsync(string videoPath, string wavPath)
+    {
+        LastMuxError = null;
+
+        var merged = Path.Combine(
+            Path.GetDirectoryName(videoPath)!,
+            Path.GetFileNameWithoutExtension(videoPath) + ".mixed.mp4");
+
+        var hasMic = await HasAudioStreamAsync(videoPath);
+
+        var args = new List<string> { "-y", "-i", videoPath, "-i", wavPath };
+
+        if (hasMic)
+        {
+            // Mix mic and desktop. `dropout_transition=0` stops amix ducking
+            // when one source is briefly silent, which otherwise makes speech
+            // swell and fade as the desktop audio comes and goes.
+            args.AddRange([
+                "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=longest:dropout_transition=0[a]",
+                "-map", "0:v", "-map", "[a]",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+            ]);
+        }
+        else
+        {
+            args.AddRange([
+                "-map", "0:v", "-map", "1:a",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+            ]);
+        }
+
+        args.AddRange(["-movflags", "+faststart", merged]);
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = FfmpegLocator.FfmpegPath,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardError = true,
+            };
+            foreach (var a in args) psi.ArgumentList.Add(a);
+
+            using var proc = Process.Start(psi);
+            if (proc is null) return videoPath;
+
+            var stderr = await proc.StandardError.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+
+            if (proc.ExitCode != 0 || !File.Exists(merged))
+            {
+                // Keep the reason: a silent fallback to the un-mixed file is
+                // indistinguishable from system audio never having been
+                // captured, and that ambiguity cost a debugging round.
+                LastMuxError = proc.ExitCode != 0
+                    ? ExplainFailure(stderr, proc.ExitCode)
+                    : "ffmpeg reported success but wrote no file.";
+                return videoPath;
+            }
+
+            // Replace the original in place so the user gets one file with the
+            // name they were told about.
+            File.Delete(videoPath);
+            File.Move(merged, videoPath);
+            return videoPath;
+        }
+        catch
+        {
+            try { if (File.Exists(merged)) File.Delete(merged); } catch { /* best effort */ }
+            return videoPath;
+        }
+    }
+
+    private static async Task<bool> HasAudioStreamAsync(string path)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = FfmpegLocator.FfmpegPath,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardError = true,
+            };
+            psi.ArgumentList.Add("-hide_banner");
+            psi.ArgumentList.Add("-i");
+            psi.ArgumentList.Add(path);
+
+            using var proc = Process.Start(psi);
+            if (proc is null) return false;
+
+            var stderr = await proc.StandardError.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+            return stderr.Contains("Audio:", StringComparison.Ordinal);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // --- Pause / resume -----------------------------------------------------
+
+    private DateTime _pausedAt;
+    private TimeSpan _pausedTotal;
+
+    public bool IsPaused { get; private set; }
+
+    /// <summary>
+    /// Pause by SUSPENDING every ffmpeg thread.
+    ///
+    /// ffmpeg has no pause command -- there is nothing to send on stdin and no
+    /// signal that means "hold". Suspending the process stops it reading frames
+    /// entirely, which is exactly what pausing means for a live capture, and it
+    /// resumes byte-for-byte where it left off.
+    ///
+    /// The elapsed clock subtracts paused time so the timer matches the
+    /// recording's real duration rather than wall time. ddagrab timestamps come
+    /// from the capture itself, so the paused span simply does not appear in
+    /// the file.
+    /// </summary>
+    public bool Pause()
+    {
+        if (_proc is null || IsPaused || _proc.HasExited) return false;
+        if (!SetSuspended(_proc, true)) return false;
+
+        _pausedAt = DateTime.UtcNow;
+        IsPaused = true;
+        return true;
+    }
+
+    public bool Resume()
+    {
+        if (_proc is null || !IsPaused || _proc.HasExited) return false;
+        if (!SetSuspended(_proc, false)) return false;
+
+        _pausedTotal += DateTime.UtcNow - _pausedAt;
+        IsPaused = false;
+        return true;
+    }
+
+    /// <summary>
+    /// Suspend or resume every thread in a process.
+    ///
+    /// NtSuspendProcess would be one call, but it is undocumented; iterating the
+    /// thread list uses only documented API and behaves the same. Resume counts
+    /// are nested, so ResumeThread is called until the count reaches zero --
+    /// otherwise a thread suspended twice stays suspended.
+    /// </summary>
+    private static bool SetSuspended(Process process, bool suspend)
+    {
+        var any = false;
+
+        foreach (ProcessThread thread in process.Threads)
+        {
+            var handle = OpenThread(THREAD_SUSPEND_RESUME, false, (uint)thread.Id);
+            if (handle == IntPtr.Zero) continue;
+
+            try
+            {
+                if (suspend)
+                {
+                    any |= SuspendThread(handle) != unchecked((uint)-1);
+                }
+                else
+                {
+                    while (ResumeThread(handle) > 1) { }
+                    any = true;
+                }
+            }
+            finally
+            {
+                CloseHandle(handle);
+            }
+        }
+
+        return any;
+    }
+
+    private const int THREAD_SUSPEND_RESUME = 0x0002;
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr OpenThread(int access, bool inherit, uint threadId);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint SuspendThread(IntPtr thread);
+
+    [DllImport("kernel32.dll")]
+    private static extern int ResumeThread(IntPtr thread);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
 
     public async Task CancelAsync()
     {

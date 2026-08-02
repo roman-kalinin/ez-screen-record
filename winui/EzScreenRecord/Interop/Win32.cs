@@ -217,6 +217,25 @@ internal static partial class Win32
     internal static extern IntPtr CreateRectRgn(int left, int top, int right, int bottom);
 
     [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateEllipticRgn(int left, int top, int right, int bottom);
+
+    [DllImport("gdi32.dll")]
+    internal static extern IntPtr CreateRoundRectRgn(
+        int left, int top, int right, int bottom, int cornerWidth, int cornerHeight);
+
+    /// <summary>
+    /// Cut a window to a region. Everything outside is not drawn and not
+    /// hit-tested -- the only way to give an opaque window a non-rectangular
+    /// silhouette, and therefore the only way a circular camera bubble avoids
+    /// recording a black rectangle around itself.
+    ///
+    /// The window takes ownership of the region; do not delete it afterwards.
+    /// Passing IntPtr.Zero restores the full rectangle.
+    /// </summary>
+    [DllImport("user32.dll")]
+    internal static extern int SetWindowRgn(IntPtr hWnd, IntPtr region, bool redraw);
+
+    [DllImport("gdi32.dll")]
     internal static extern bool DeleteObject(IntPtr obj);
 
     /// <summary>DWMWA_WINDOW_CORNER_PREFERENCE.</summary>
@@ -228,6 +247,10 @@ internal static partial class Win32
 
     [LibraryImport("user32.dll")]
     internal static partial uint GetDpiForWindow(IntPtr hWnd);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool SetForegroundWindow(IntPtr hWnd);
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct RECT

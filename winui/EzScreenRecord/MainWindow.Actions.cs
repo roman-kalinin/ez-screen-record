@@ -102,12 +102,30 @@ public sealed partial class MainWindow
 
         panel.Children.Add(new MenuFlyoutSeparator());
 
+        var systemAudio = new ToggleSwitch
+        {
+            Header = "Record system audio",
+            IsOn = Settings.Recording.SystemAudioEnabled,
+        };
+        systemAudio.Toggled += (_, _) =>
+        {
+            Settings.Recording.SystemAudioEnabled = systemAudio.IsOn;
+            Settings.Save();
+        };
+        panel.Children.Add(systemAudio);
+        panel.Children.Add(Caption(
+            "Captures what your speakers are playing, mixed with the microphone. " +
+            "ffmpeg cannot capture desktop audio on Windows, so the app records it " +
+            "separately and merges it when the take ends."));
+
+        panel.Children.Add(new MenuFlyoutSeparator());
+
         // State what the recorder cannot do, rather than leaving the gap for
         // the user to discover in a finished file.
         panel.Children.Add(Heading("Not yet supported"));
         panel.Children.Add(Caption(
-            "System audio is not captured — only the microphone. Pause is unavailable; " +
-            "ffmpeg cannot pause a running encode."));
+            "Window capture records the display the window sits on. Image overlays " +
+            "record at a fixed position."));
 
         panel.Children.Add(new MenuFlyoutSeparator());
 
@@ -159,6 +177,7 @@ public sealed partial class MainWindow
         var rows = new (string Key, string Action)[]
         {
             ("F9", "Record / stop"),
+            ("F10", "Pause / resume"),
             ("F8", "Draw"),
             ("Ctrl+Shift+X", "Erase all"),
         };

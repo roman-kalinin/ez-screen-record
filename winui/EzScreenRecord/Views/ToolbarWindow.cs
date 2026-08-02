@@ -35,6 +35,7 @@ public sealed class ToolbarWindow : Window
     private readonly Border _bar;
     private readonly TextBlock _timer;
     private readonly Button _drawButton;
+    private Button? _pauseButton;
 
     private bool _dragging;
 
@@ -121,7 +122,8 @@ public sealed class ToolbarWindow : Window
         };
         content.Children.Add(_timer);
 
-        // No Pause button: ffmpeg cannot pause a running encode.
+        _pauseButton = Round(Glyphs.Pause, "Pause (F10)", () => PauseRequested?.Invoke());
+        content.Children.Add(_pauseButton);
 
         var stop = new Button
         {
@@ -249,6 +251,14 @@ public sealed class ToolbarWindow : Window
     }
 
     public void SetElapsed(string text) => _timer.Text = text;
+
+    /// <summary>Swap the pause button to Resume while the take is held.</summary>
+    public void SetPaused(bool paused)
+    {
+        if (_pauseButton is null) return;
+        ((FontIcon)_pauseButton.Content).Glyph = paused ? Glyphs.Play : Glyphs.Pause;
+        ToolTipService.SetToolTip(_pauseButton, paused ? "Resume (F10)" : "Pause (F10)");
+    }
 
     public void SetDrawActive(bool active)
         => _drawButton.Background = new SolidColorBrush(active

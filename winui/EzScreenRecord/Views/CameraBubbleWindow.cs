@@ -176,6 +176,38 @@ public sealed class CameraBubbleWindow : Window
         {
             Rect = new Windows.Foundation.Rect(0, 0, _frame.ActualWidth, _frame.ActualHeight),
         };
+
+        ApplyWindowShape(size.Width, size.Height);
+    }
+
+    /// <summary>
+    /// Cut the WINDOW to the bubble's shape.
+    ///
+    /// A rounded XAML Border is not enough: the window behind it is opaque, so
+    /// the corners outside the rounded fill still render -- a circular camera
+    /// showed a black rectangle around it, and that rectangle is recorded,
+    /// because this window is captured as part of the desktop.
+    ///
+    /// SetWindowRgn cuts the window at the OS level, so anything outside the
+    /// region is genuinely not there.
+    /// </summary>
+    private void ApplyWindowShape(int width, int height)
+    {
+        if (width <= 0 || height <= 0) return;
+
+        var region = _settings.Camera.Shape switch
+        {
+            OverlayShape.Circle => Win32.CreateEllipticRgn(0, 0, width, height),
+            OverlayShape.Rounded => Win32.CreateRoundRectRgn(
+                0, 0, width + 1, height + 1,
+                (int)(Math.Min(width, height) * 0.24),
+                (int)(Math.Min(width, height) * 0.24)),
+            _ => IntPtr.Zero,
+        };
+
+        // Region ownership passes to the window; a null region restores the
+        // full rectangle, which is what the square shape wants.
+        Win32.SetWindowRgn(Hwnd, region, true);
     }
 
     public async Task StartPreviewAsync()
@@ -253,21 +285,79 @@ public sealed class CameraBubbleWindow : Window
 
     private POINT _dragOrigin;
 
+    /// <summary>
+    /// How close to an edge counts as a resize grab, in pixels. Generous
+    /// because the bubble is often small and the window has no visible chrome
+    /// to aim at.
+    /// </summary>
+    private const int ResizeMargin = 14;
+
+    private bool _resizing;
+    private Windows.Graphics.SizeInt32 _sizeStart;
+    private bool _resizeLeft;
+    private bool _resizeTop;
+
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        _dragging = true;
         GetCursorPos(out _dragOrigin);
         _windowStart = AppWindow.Position;
+        _sizeStart = AppWindow.Size;
+
+        // Near an edge resizes; anywhere else moves. This is what makes the
+        // bubble resizable live, mid-recording, the way Electron's is: the
+        // window is on the desktop and being captured, so what you do to it
+        // here is what lands in the video.
+        var local = e.GetCurrentPoint(_frame).Position;
+        _resizeLeft = local.X < ResizeMargin;
+        _resizeTop = local.Y < ResizeMargin;
+        var right = local.X > _frame.ActualWidth - ResizeMargin;
+        var bottom = local.Y > _frame.ActualHeight - ResizeMargin;
+
+        _resizing = _resizeLeft || _resizeTop || right || bottom;
+        _dragging = !_resizing;
+
         _frame.CapturePointer(e.Pointer);
     }
 
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
     {
-        if (!_dragging) return;
+        if (!_dragging && !_resizing)
+        {
+            // Show a resize cursor near the edges so the affordance is
+            // discoverable; the window has no visible chrome to hint at it.
+            // Set with SetCursor rather than ProtectedCursor, which is a
+            // UIElement member and not reachable from a Window.
+            var p = e.GetCurrentPoint(_frame).Position;
+            var nearEdge = p.X < ResizeMargin || p.Y < ResizeMargin
+                || p.X > _frame.ActualWidth - ResizeMargin
+                || p.Y > _frame.ActualHeight - ResizeMargin;
+
+            SetCursor(LoadCursor(IntPtr.Zero, nearEdge ? IDC_SIZENWSE : IDC_SIZEALL));
+            return;
+        }
+
         GetCursorPos(out var cursor);
-        AppWindow.Move(new PointInt32(
-            _windowStart.X + (cursor.X - _dragOrigin.X),
-            _windowStart.Y + (cursor.Y - _dragOrigin.Y)));
+        var dx = cursor.X - _dragOrigin.X;
+        var dy = cursor.Y - _dragOrigin.Y;
+
+        if (_dragging)
+        {
+            AppWindow.Move(new PointInt32(_windowStart.X + dx, _windowStart.Y + dy));
+            return;
+        }
+
+        // Resize. A dragged left/top edge moves the window as it grows, so the
+        // opposite corner stays pinned -- the same behaviour as the preview's
+        // corner anchors.
+        const int min = 120;
+
+        var width = Math.Max(min, _sizeStart.Width + (_resizeLeft ? -dx : dx));
+        var height = Math.Max(min, _sizeStart.Height + (_resizeTop ? -dy : dy));
+
+        var x = _resizeLeft ? _windowStart.X + (_sizeStart.Width - width) : _windowStart.X;
+        var y = _resizeTop ? _windowStart.Y + (_sizeStart.Height - height) : _windowStart.Y;
+
+        AppWindow.MoveAndResize(new RectInt32(x, y, width, height));
     }
 
     [System.Runtime.InteropServices.StructLayout(
@@ -277,13 +367,31 @@ public sealed class CameraBubbleWindow : Window
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool GetCursorPos(out POINT point);
 
+    private const int IDC_SIZEALL = 32646;
+    private const int IDC_SIZENWSE = 32642;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr LoadCursor(IntPtr instance, int cursor);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr SetCursor(IntPtr cursor);
+
     private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
     {
-        if (!_dragging) return;
+        if (!_dragging && !_resizing) return;
+
         _dragging = false;
+        _resizing = false;
         _frame.ReleasePointerCaptures();
+
+        // Publish the new geometry so the app's preview agrees with the bubble,
+        // and so it survives to the next session.
         PersistPosition();
+        GeometryChanged?.Invoke();
     }
+
+    /// <summary>Raised after a drag or resize, so the preview can follow.</summary>
+    public event Action? GeometryChanged;
 
     /// <summary>
     /// Store the bubble's position back as a fraction of the work area, so the
