@@ -6,6 +6,25 @@ something. The version is stamped into the installer filename
 (`Ez Screen Record Setup 1.2.0.exe`) and shown in the app's Settings menu, so an
 installed copy can always be identified.
 
+## 1.3.3 — 2026-08-03
+
+### Fixed
+- **First recording after launch was low quality.** Chromium's desktop capturer
+  reports a small placeholder size (~1280×720) on its first frame and ramps to
+  full resolution a beat later; the recorder trusted that first number and
+  pinned the whole take to a low resolution and bitrate. Later takes were fine
+  because the capturer was already warm. It now waits for the reported size to
+  settle before sizing the canvas and choosing the bitrate.
+- **A window source smaller than the screen was stretched when picked
+  mid-recording.** The canvas is fixed to the screen's size for the whole take,
+  so a smaller/different-shaped source was distorted to fill it. Sources are now
+  letterboxed to preserve their aspect ratio; a full-screen source still fills
+  edge-to-edge exactly as before.
+- **macOS: no dock icon.** The app came up as an accessory (NSApplication
+  UIElement), so its dock icon flashed at launch and then disappeared and could
+  not be pinned. It now forces a regular activation policy on macOS and shows
+  the dock tile.
+
 ## 1.3.2 — 2026-08-03
 
 ### Fixed

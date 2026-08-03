@@ -173,6 +173,10 @@ export class ScreenRecorder {
     } as unknown as MediaStreamConstraints);
 
     this.screenVideo = await this.attachVideo(this.screenStream);
+    // Desktop capture often reports a small placeholder size at loadedmetadata
+    // and only ramps to full resolution a beat later, so wait for it to settle
+    // before sizing anything off it. See waitForStableSize.
+    await this.waitForStableSize(this.screenVideo);
 
     const nativeW = this.screenVideo.videoWidth;
     const nativeH = this.screenVideo.videoHeight;
@@ -498,6 +502,33 @@ export class ScreenRecorder {
     return result;
   }
 
+  /**
+   * Wait for a capture's reported dimensions to stop changing.
+   *
+   * Chromium's desktop capturer frequently reports a small placeholder size
+   * (~1280x720) at `loadedmetadata` and ramps to the real resolution a beat
+   * later. Sizing the canvas and bitrate off that placeholder pins the WHOLE
+   * take to a low resolution — the "first recording right after launch is
+   * blurry, the next one is fine" bug, since the capturer is already warm on
+   * later takes. Poll until the size is non-zero and unchanged across two
+   * reads, or a short cap elapses (a nearly-static screen may deliver few
+   * frames, and by then whatever size we have is the real one).
+   */
+  private waitForStableSize(video: HTMLVideoElement): Promise<void> {
+    return new Promise((resolve) => {
+      let last = -1;
+      const deadline = performance.now() + 700;
+      const poll = () => {
+        const w = video.videoWidth;
+        if (w > 0 && w === last) return resolve();
+        last = w;
+        if (performance.now() >= deadline) return resolve();
+        setTimeout(poll, 50);
+      };
+      poll();
+    });
+  }
+
   private attachVideo(stream: MediaStream): Promise<HTMLVideoElement> {
     return new Promise((resolve, reject) => {
       const video = document.createElement('video');
@@ -612,7 +643,26 @@ export class ScreenRecorder {
     const cw = canvas.width;
     const ch = canvas.height;
 
-    ctx.drawImage(this.screenVideo, 0, 0, cw, ch);
+    // Fit the source to the canvas preserving its aspect ratio, rather than
+    // stretching to fill. The canvas is locked to the screen's size for the
+    // whole take (H.264 needs constant dimensions), so a source with a
+    // different shape — e.g. a window smaller than the screen picked mid-take —
+    // must be letterboxed, not distorted. The common case (source fills the
+    // canvas) still draws edge-to-edge, byte-for-byte as before.
+    const vw = this.screenVideo.videoWidth || cw;
+    const vh = this.screenVideo.videoHeight || ch;
+    const scale = Math.min(cw / vw, ch / vh);
+    const dw = Math.round(vw * scale);
+    const dh = Math.round(vh * scale);
+    if (cw - dw <= 2 && ch - dh <= 2) {
+      ctx.drawImage(this.screenVideo, 0, 0, cw, ch);
+    } else {
+      // Clear to black so the letterbox bars are clean and no previous, larger
+      // frame shows through around a smaller source.
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, cw, ch);
+      ctx.drawImage(this.screenVideo, Math.round((cw - dw) / 2), Math.round((ch - dh) / 2), dw, dh);
+    }
 
     // Image overlays sit under the webcam so the presenter is never hidden.
     for (const { overlay, bitmap } of this.images) {

@@ -1188,6 +1188,15 @@ if (!gotLock) {
     // build.appId in package.json.
     if (process.platform === 'win32') app.setAppUserModelId('com.joket.ezscreenrecord');
 
+    // Guarantee a normal dock presence on macOS. The app was coming up as an
+    // accessory (NSApplication UIElement), so its dock icon flashed at launch
+    // and then vanished — leaving no way to see or right-click-pin it. Forcing
+    // the regular activation policy and showing the dock tile fixes that.
+    if (process.platform === 'darwin') {
+      app.setActivationPolicy('regular');
+      app.dock?.show();
+    }
+
     // Grant getDisplayMedia requests using the source the user picked in our own
     // UI. The main recorder path uses the legacy chromeMediaSource constraints
     // and never reaches here; this handler keeps any getDisplayMedia() caller
