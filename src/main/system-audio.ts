@@ -105,6 +105,19 @@ export class SystemAudioHelper {
     }
   }
 
+  /**
+   * Force-kill the helper immediately, without finalising the WAV. Used on app
+   * quit, where waiting for a clean stop is neither possible nor useful.
+   */
+  dispose(): void {
+    try {
+      this.proc?.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+    this.proc = null;
+  }
+
   /** Stop appending WITHOUT finalising, in lockstep with an ffmpeg pause. */
   pause(): void {
     if (!this.proc || this.paused) return;

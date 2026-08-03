@@ -184,10 +184,21 @@ function createControlWindow() {
 
   controlWindow.on('closed', () => {
     controlWindow = null;
+    // A take may still be running — closing via the native macOS traffic light
+    // bypasses the in-app "stop first" prompt. Kill capture NOW so macOS drops
+    // the screen-recording indicator instead of showing it after the app is
+    // gone from view.
+    nativeRecorder?.dispose();
+    nativeRecorder = null;
     // The overlays are child concepts; without the controller they are orphaned.
     overlayWindow?.close();
     cameraOverlayWindow?.close();
     toolbarWindow?.close();
+    // Closing the controller means quitting. window-all-closed already does
+    // this, but only once every hidden window has finished closing; quit
+    // explicitly so nothing (a lingering overlay, a busy renderer) can keep the
+    // process — and the capture indicator — alive.
+    app.quit();
   });
 
   // Open external links in the real browser instead of a new Electron window.
@@ -1218,6 +1229,13 @@ if (!gotLock) {
     });
   });
 
+  // Final safety net: whatever route the app quits by (Cmd+Q, menu, window
+  // close), make sure no capture process outlives it — that is what leaves the
+  // macOS screen-recording indicator stuck on after the app is gone.
+  app.on('before-quit', () => {
+    nativeRecorder?.dispose();
+    nativeRecorder = null;
+  });
   app.on('will-quit', () => globalShortcut.unregisterAll());
   app.on('window-all-closed', () => app.quit());
 }

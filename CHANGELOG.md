@@ -6,6 +6,18 @@ something. The version is stamped into the installer filename
 (`Ez Screen Record Setup 1.2.0.exe`) and shown in the app's Settings menu, so an
 installed copy can always be identified.
 
+## 1.3.1 — 2026-08-03
+
+### Fixed
+- **macOS kept showing the screen-recording indicator after the app was
+  closed.** Closing the window (especially via the native traffic light, which
+  skips the in-app "stop first" prompt) left the ffmpeg/avfoundation capture
+  process running, so macOS still believed a recording was in progress. The app
+  now force-kills any active capture — the recorder and the system-audio helper
+  — when the control window closes and again on `before-quit`, and closing the
+  controller quits the app deterministically instead of leaving it alive behind
+  its hidden overlay windows.
+
 ## 1.3.0 — 2026-08-03
 
 ### Added

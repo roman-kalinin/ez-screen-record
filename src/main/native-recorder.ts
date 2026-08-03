@@ -1026,6 +1026,26 @@ export class NativeRecorder {
     this.proc = null;
   }
 
+  /**
+   * Immediately tear down capture without finalising anything.
+   *
+   * macOS keeps the screen-recording indicator (and the avfoundation session)
+   * alive until the ffmpeg process actually exits, so on app quit we cannot
+   * rely on the graceful, async `stop()` — the process must be killed
+   * synchronously and unconditionally, including when a take was left running
+   * because the window was closed via the native traffic light.
+   */
+  dispose(): void {
+    try {
+      this.proc?.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+    this.proc = null;
+    this.systemAudio?.dispose();
+    this.systemAudio = null;
+  }
+
   async cancel(): Promise<void> {
     // A paused take has no process but does have segments on disk. Returning
     // early here would leave them orphaned and the recorder stuck paused.
