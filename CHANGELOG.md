@@ -6,6 +6,18 @@ something. The version is stamped into the installer filename
 (`Ez Screen Record Setup 1.2.0.exe`) and shown in the app's Settings menu, so an
 installed copy can always be identified.
 
+## 1.3.2 — 2026-08-03
+
+### Fixed
+- **macOS: the main window was left squeezed against the left edge of the screen
+  during a recording.** To keep the browser engine's canvas compositor running,
+  the control window is parked out of sight rather than hidden — but it did this
+  by moving off-screen to `x: -32000`, and macOS clamps a window's position to
+  keep it partly on the desktop, so it stayed visible. On macOS it is now hidden
+  by making it fully transparent and click-through for the duration of the take
+  (the renderer stays live, so the recording keeps compositing) and restored
+  when the take ends. Windows still parks off-screen.
+
 ## 1.3.1 — 2026-08-03
 
 ### Fixed

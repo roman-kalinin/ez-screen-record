@@ -530,13 +530,24 @@ function enterToolbarMode(keepControlWindowAlive = false) {
   win.setAlwaysOnTop(true, 'screen-saver');
   // The main window steps aside for the take; the toolbar replaces it.
   if (keepControlWindowAlive) {
-    // Park it off-screen rather than hiding it, so its canvas keeps
-    // compositing. Bounds are restored in exitToolbarMode.
+    // Keep the window "visible" to Chromium so its canvas compositor keeps
+    // running (a hidden window stops compositing), but get it out of the
+    // user's sight. Restored in exitToolbarMode.
     if (!controlBoundsBeforeToolbar) controlBoundsBeforeToolbar = controlWindow.getBounds();
     const b = controlBoundsBeforeToolbar;
-    // Far enough out that no display can contain it, and excluded from
-    // capture so it cannot appear in the recording even briefly.
-    controlWindow.setBounds({ ...b, x: -32000, y: -32000 });
+    if (process.platform === 'darwin') {
+      // macOS refuses to move a window fully off-screen — it clamps the bounds
+      // to keep part on the desktop, so the -32000 park used on Windows leaves
+      // the window squeezed against the screen edge, still visible. Make it
+      // fully transparent and click-through instead: the renderer stays live,
+      // the user sees nothing, and it stays out of the take.
+      controlWindow.setOpacity(0);
+      controlWindow.setIgnoreMouseEvents(true, { forward: true });
+    } else {
+      // Far enough out that no display can contain it.
+      controlWindow.setBounds({ ...b, x: -32000, y: -32000 });
+    }
+    // Excluded from capture so it cannot appear in the recording even briefly.
     controlWindow.setContentProtection(true);
   } else {
     controlWindow.hide();
@@ -552,9 +563,15 @@ function exitToolbarMode() {
     toolbarWindow.hide();
   }
   if (!controlWindow || controlWindow.isDestroyed()) return;
-  // Undo the off-screen park, if that is how the take hid the window.
+  // Undo however the take hid the window: transparency on macOS, an off-screen
+  // park elsewhere.
   if (controlBoundsBeforeToolbar) {
-    controlWindow.setBounds(controlBoundsBeforeToolbar);
+    if (process.platform === 'darwin') {
+      controlWindow.setOpacity(1);
+      controlWindow.setIgnoreMouseEvents(false);
+    } else {
+      controlWindow.setBounds(controlBoundsBeforeToolbar);
+    }
     controlWindow.setContentProtection(false);
     controlBoundsBeforeToolbar = null;
   }
