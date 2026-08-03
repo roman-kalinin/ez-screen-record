@@ -7,6 +7,11 @@ export interface CaptureSource {
   /** Present for screens, absent for windows. */
   displayId?: string;
   kind: 'screen' | 'window';
+  /**
+   * The window is minimized, so it has no thumbnail and cannot be captured
+   * until it is restored. Selecting one restores it first.
+   */
+  minimized?: boolean;
 }
 
 export interface MediaDevice {
@@ -33,6 +38,31 @@ export interface CameraOverlay {
   mirrored: boolean;
   /** Drop shadow behind the overlay. */
   shadow: boolean;
+  /**
+   * Show the camera as a real, draggable window on the desktop while recording,
+   * instead of letting ffmpeg composite it internally. ON by default.
+   *
+   * When on: the webcam is opened once by the renderer (so the app's preview
+   * stays live and fully editable during a take) and mirrored into an
+   * always-on-top overlay window that ffmpeg's screen capture picks up — the
+   * same trick the drawing tool uses. The bubble is then visible on the real
+   * desktop and can be dragged/resized in place, live.
+   *
+   * When off, ffmpeg composites the camera itself. That costs BOTH hard rules
+   * and is why this defaults to on: the preview is suspended for the take, and
+   * ffmpeg's blend is framesync'd, so the webcam's rate paces the whole
+   * recording — a 30fps camera (15fps in dim light) pulled 60fps takes down to
+   * ~21 unique fps and 120fps takes to ~13. Only turn it off if the camera
+   * bubble must not be visible on the real desktop, and expect the frame rate
+   * to follow the webcam.
+   */
+  showOnScreen: boolean;
+  /**
+   * Set once `showOnScreen` has been migrated to its new default. Without this
+   * the migration would re-apply on every load and the user could never turn
+   * the setting back off. Internal; not shown in the UI.
+   */
+  showOnScreenMigrated?: boolean;
 }
 
 export interface ImageOverlay {
@@ -61,12 +91,35 @@ export type ResolutionPreset = 'source' | '2160' | '1440' | '1080' | '720';
  *
  * `overlay` composites the webcam and images live in the browser, but is bound
  * by Chromium's encoder: about 12 Mbps at 1440p, 4:2:0 only, and no way to
- * raise it. `crisp` hands capture to ffmpeg (Desktop Duplication + x264 CRF in
- * 4:4:4), which measured 45.0 dB PSNR against 36.4 dB for the same source —
- * the difference between legible and mushy screen text. The cost is that
- * ffmpeg grabs the raw desktop, so it cannot burn in overlays.
+ * raise it. `crisp` hands capture to ffmpeg (Desktop Duplication + NVENC or
+ * x264 in 4:4:4), which measured 46.4 dB PSNR against 36.3 dB for the same
+ * source — the difference between legible and mushy screen text. The cost is
+ * that ffmpeg grabs the raw desktop, so it cannot burn in overlays.
  */
 export type CaptureEngine = 'overlay' | 'crisp';
+
+export const CAPTURE_ENGINES: Array<{
+  value: CaptureEngine;
+  label: string;
+  detail: string;
+}> = [
+  {
+    value: 'crisp',
+    label: 'Best quality — whole screen only',
+    detail:
+      'ffmpeg captures the desktop in 4:4:4 (46.4 dB PSNR against 36.3 for the browser). ' +
+      'Cannot record a single window, and changing source or pausing costs about two seconds ' +
+      'while it restarts.',
+  },
+  {
+    value: 'overlay',
+    label: 'Flexible — windows, seamless switching',
+    detail:
+      'Chromium captures, the way Google Meet does. Records a single window, and switching ' +
+      'source mid-take is instant with no break in the video. The encoder caps around ' +
+      '12 Mbps at 1440p in 4:2:0, so fine text is softer.',
+  },
+];
 
 export type QualityPreset = 'high' | 'balanced' | 'compact';
 
@@ -82,12 +135,47 @@ export interface RecordingSettings {
   quality: QualityPreset;
   /** Where finished recordings are written. */
   outputDir: string | null;
+  /**
+   * Keep the recording toolbar out of the video.
+   *
+   * On by default — the recorder's own chrome has no place in a tutorial. The
+   * catch is that Windows applies content protection to EVERY capture, so the
+   * toolbar also disappears from Zoom/Teams shares while recording, which is
+   * why this is a setting rather than always-on.
+   */
+  hideToolbarFromCapture: boolean;
 }
 
-export const QUALITY_PRESETS: Array<{ value: QualityPreset; label: string }> = [
-  { value: 'high', label: 'Best — visually lossless' },
-  { value: 'balanced', label: 'Balanced' },
-  { value: 'compact', label: 'Smallest file' },
+/**
+ * How much data per pixel — a different axis from RESOLUTIONS, which sets how
+ * many pixels there are.
+ *
+ * These map to CRF and chroma subsampling: 16/4:4:4, 20/4:4:4, 23/4:2:0. A
+ * 1440p compact file and a 720p best file can be the same size while failing
+ * in opposite ways — one is big but mushy, the other small but sharp. Chroma
+ * is the part that matters most for screen text, which is why only the
+ * smallest preset drops to 4:2:0.
+ */
+export const QUALITY_PRESETS: Array<{
+  value: QualityPreset;
+  label: string;
+  detail: string;
+}> = [
+  {
+    value: 'high',
+    label: 'Best — visually lossless',
+    detail: 'Full colour detail. Text stays razor sharp. Largest files.',
+  },
+  {
+    value: 'balanced',
+    label: 'Balanced',
+    detail: 'Full colour detail, roughly half the size. Text still sharp.',
+  },
+  {
+    value: 'compact',
+    label: 'Smallest file',
+    detail: 'Reduced colour detail — fine for video, softens small text.',
+  },
 ];
 
 export const RESOLUTIONS: Array<{ value: ResolutionPreset; label: string }> = [
@@ -131,12 +219,55 @@ export interface AppSettings {
   draw: DrawSettings;
 }
 
-export type RecordingState = 'idle' | 'countdown' | 'recording' | 'paused' | 'saving';
+/**
+ * `pausing` and `resuming` are the in-between states of a native take.
+ *
+ * ffmpeg cannot pause: each pause finalises a segment and each resume spawns a
+ * fresh process, so both take a moment. Without a state for that moment the
+ * button simply looked dead — the click registered but nothing changed until
+ * the operation completed.
+ */
+export type RecordingState =
+  | 'idle'
+  | 'countdown'
+  /**
+   * ffmpeg has been asked to start but has not confirmed frames yet. The
+   * toolbar is already up (it must be, so it stays out of the capture), so
+   * without this state the bar sat there reading 00:00 as though nothing was
+   * happening — which is exactly what a slow start looked like.
+   */
+  | 'starting'
+  | 'recording'
+  | 'pausing'
+  | 'paused'
+  | 'resuming'
+  | 'saving';
+
+/**
+ * Is a take under way? True for the paused and transitional states too — the
+ * recorder exists and holds its devices throughout, so live-edit pushes and
+ * mid-take UI must all treat these the same as `recording`.
+ */
+export function isActiveTake(s: RecordingState): boolean {
+  return (
+    s === 'recording' ||
+    s === 'starting' ||
+    s === 'paused' ||
+    s === 'pausing' ||
+    s === 'resuming'
+  );
+}
 
 export interface SaveResult {
   ok: boolean;
   filePath?: string;
   error?: string;
+  /**
+   * Epoch ms at which capture actually began, for a native start. The renderer
+   * anchors its clock here rather than to when the IPC call returned, so the
+   * startup period is counted rather than lost.
+   */
+  startedAt?: number;
 }
 
 /** Hotkey actions registered globally so they work while other apps are focused. */
@@ -151,11 +282,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
     fps: 30,
     resolution: 'source',
     countdownSeconds: 3,
-    // Default to the browser pipeline: the webcam overlay is the app's whole
-    // point, and 'crisp' cannot composite it.
-    engine: 'overlay',
+    // Default to ffmpeg. The webcam is shown as an on-screen bubble that the
+    // desktop capture picks up, so 'crisp' not compositing it internally costs
+    // nothing -- and it is the only engine that keeps screen text legible.
+    // Switch to 'overlay' to record a single window.
+    engine: 'crisp',
     quality: 'high',
     outputDir: null,
+    hideToolbarFromCapture: true,
   },
   camera: {
     enabled: true,
@@ -166,6 +300,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     shape: 'rounded',
     mirrored: true,
     shadow: true,
+    showOnScreen: true,
   },
   images: [],
   draw: {

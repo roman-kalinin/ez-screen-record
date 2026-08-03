@@ -1,0 +1,87 @@
+# Changelog
+
+Versions follow [semver](https://semver.org/): `MAJOR.MINOR.PATCH` — a patch
+release is bugfixes only, a minor release adds behaviour, a major release breaks
+something. The version is stamped into the installer filename
+(`Ez Screen Record Setup 1.2.0.exe`) and shown in the app's Settings menu, so an
+installed copy can always be identified.
+
+## 1.2.0 — 2026-08-03
+
+### Added
+- **System (desktop) audio on the ffmpeg "crisp" engine (Windows).** ffmpeg has
+  no WASAPI/loopback input on Windows, so a small bundled helper
+  (`ez-audio-loopback.exe`) captures the default playback endpoint to a WAV,
+  which is muxed into the finished recording. The helper pauses and resumes in
+  lockstep with the take's segment boundaries, so the audio drops exactly the
+  same span the video does and never drifts. When a microphone is also recorded
+  the two are mixed; muxing is best-effort, so a failure leaves a valid,
+  audio-less recording rather than losing the take.
+
+### Fixed
+- **System audio on the browser ("overlay") engine.** It used a legacy
+  `getUserMedia({ chromeMediaSource: 'desktop' })` loopback path that yields no
+  audio track on current Electron, so desktop sound was silently missing. It now
+  uses `getDisplayMedia` answered with `audio: 'loopback'`, the supported route.
+- **The on-screen camera bubble no longer duplicates or ghosts in the
+  recording.** Dragging it left a frozen copy at the old position (the overlay
+  window was captured *and* composited — now excluded from capture), teleported
+  on release (the live rect is now streamed to the recorder each frame), and
+  left a stale ghost on the layered window (now repainted per frame).
+
+### Housekeeping
+- Repo-wide cleanup: corrected inaccurate comments, removed dead code, and fixed
+  three latent bugs (wrong-display fallback in the display-media handler,
+  front-trimming that deleted the user's oldest image overlays past the cap, and
+  the toolbar not re-enumerating devices plugged in mid-take).
+
+## 1.1.0 — 2026-08-03
+
+### Fixed
+- **Pause now works on the ffmpeg engine.** It previously did nothing at all:
+  `togglePause` only ever spoke to the browser recorder, whose state is
+  `inactive` during a native take, so the click fell through in silence.
+  ffmpeg has no pause, so each pause now finalises a segment and each resume
+  spawns the next; stop rejoins them losslessly with the concat demuxer. A
+  take that was never paused is a single segment and is simply moved into
+  place, so ordinary recording needs no concat support at all.
+- **Recording no longer starts before ffmpeg is ready.** Start waited a flat
+  1800ms, then briefly keyed off `Output #0` — which ffmpeg prints while still
+  opening devices (~200ms), nearly two seconds before the first real frame
+  (~2180ms on a 1440p ddagrab path). Readiness is now a non-zero `frame=`
+  count, with the timeout kept only as a backstop.
+- **The elapsed clock counts the startup period.** It was anchored after the
+  readiness wait rather than at process launch, so every take under-reported
+  itself by however long ffmpeg took to come up.
+- **Changing the source mid-take restores the toolbar.** Opening the picker
+  hides the toolbar so the dialog can be seen, but nothing put it back —
+  closing it left the main window on screen with its content hidden and no
+  toolbar, while the take kept running.
+- **The toolbar learns about pause.** It lives in its own window and only sees
+  state pushed over IPC; nothing pushed on pause, so the bar kept showing a
+  Pause button on a held take.
+
+### Added
+- A paused take is now unmistakable: a **"Paused"** badge, an amber status dot
+  that stops pulsing, an amber timer, and an amber pause button — on both the
+  main window and the recording toolbar.
+- **"Starting…", "Pausing…" and "Resuming…"** states. Spawning or finalising an
+  ffmpeg segment takes a moment, and the controls used to absorb the click and
+  look dead until it finished; the transition is now shown immediately and the
+  button is disabled while it runs.
+- The status dot now pulses while recording, so live and held are distinct at a
+  glance.
+- The app version is shown in the Settings menu.
+- `EZ_FFMPEG_DEBUG=1` writes the exact ffmpeg command and full stderr to
+  `ffmpeg-debug.log` beside the recording.
+- The bundled ffmpeg build now enables the concat demuxer, so joining paused
+  segments needs no system ffmpeg.
+
+### Changed
+- Record, Stop, Pause and Play use filled icons instead of outlines. The thin
+  outline variants were hard to read on the dark toolbar over arbitrary desktop
+  content.
+
+## 1.0.0
+
+Initial release.

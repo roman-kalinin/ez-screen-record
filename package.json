@@ -1,6 +1,6 @@
 {
   "name": "ez-screen-record",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "A minimal screen recorder for tutorial videos",
   "main": "dist-main/main/main.js",
   "author": "joket",
@@ -13,7 +13,11 @@
     "build:renderer": "vite build",
     "build": "npm run build:main && npm run build:renderer",
     "start": "npm run build && electron .",
-    "dist": "npm run build && electron-builder --win"
+    "icon": "python tools/make-icon.py",
+    "fetch:ffmpeg": "node tools/fetch-ffmpeg.mjs",
+    "build:audio-helper": "powershell -ExecutionPolicy Bypass -File native/audio-helper/build.ps1 && node -e \"require('fs').copyFileSync('native/audio-helper/ez-audio-loopback.exe','resources/ffmpeg/ez-audio-loopback.exe')\"",
+    "dist": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -36,18 +40,90 @@
   "build": {
     "appId": "com.joket.ezscreenrecord",
     "productName": "Ez Screen Record",
+    "copyright": "Copyright © 2026 joket",
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "afterPack": "tools/stamp-exe.mjs",
     "files": [
       "dist-main/**/*",
-      "dist/**/*"
+      "dist/**/*",
+      "build/icon.*",
+      "!node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/ffmpeg",
+        "to": "ffmpeg",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "win": {
       "target": [
-        "nsis"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "${productName} Setup ${version}.${ext}",
+      "signAndEditExecutable": false
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.video",
+      "artifactName": "${productName} ${version} ${arch}.${ext}",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "identity": "-",
+      "extendInfo": {
+        "NSCameraUsageDescription": "Ez Screen Record needs your camera to show you on screen while you record.",
+        "NSMicrophoneUsageDescription": "Ez Screen Record needs your microphone to record narration.",
+        "NSAudioCaptureUsageDescription": "Ez Screen Record needs audio capture access to record system sound.",
+        "NSScreenCaptureUsageDescription": "Ez Screen Record needs screen recording access to capture your screen."
+      }
+    },
+    "dmg": {
+      "artifactName": "${productName} ${version} ${arch}.${ext}",
+      "contents": [
+        {
+          "x": 140,
+          "y": 180
+        },
+        {
+          "x": 400,
+          "y": 180,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Ez Screen Record",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "deleteAppDataOnUninstall": false
     }
   }
 }

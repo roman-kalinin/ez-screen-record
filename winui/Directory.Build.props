@@ -1,0 +1,26 @@
+<Project>
+  <!--
+    Shared settings for every project in the WinUI solution.
+
+    Kept out of the individual .csproj files so the TFM and Windows SDK version
+    can only be changed in one place; a mismatch between projects surfaces as
+    obscure WinRT type-resolution errors rather than an honest build failure.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net9.0-windows10.0.26100.0</TargetFramework>
+    <!--
+      19041 is the floor for the Windows App SDK. Windows Graphics Capture and
+      SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE) both need 2004+ too, so
+      this is the real minimum for the app to function, not merely to build.
+    -->
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Warnings are worth failing on in a codebase this young. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>

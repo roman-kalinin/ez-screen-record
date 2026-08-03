@@ -17,9 +17,22 @@ export function loadSettings(): AppSettings {
     const parsed = JSON.parse(raw) as Partial<AppSettings>;
     // Merge field-by-field so settings written by an older version still load
     // once new keys are added.
+    const camera = { ...DEFAULT_SETTINGS.camera, ...(parsed.camera ?? {}) };
+
+    // One-time migration. `showOnScreen` shipped defaulting to false, which put
+    // every camera take on ffmpeg's framesync'd composite — the webcam's rate
+    // then paced the whole recording (a 30fps camera dragged 60fps takes to ~21
+    // unique fps). Nobody chose that deliberately; it was simply the old
+    // default, so a persisted `false` from before this key was user-facing is
+    // upgraded rather than preserved.
+    if (parsed.camera && parsed.camera.showOnScreenMigrated !== true) {
+      camera.showOnScreen = true;
+      camera.showOnScreenMigrated = true;
+    }
+
     return {
       recording: { ...DEFAULT_SETTINGS.recording, ...(parsed.recording ?? {}) },
-      camera: { ...DEFAULT_SETTINGS.camera, ...(parsed.camera ?? {}) },
+      camera,
       images: Array.isArray(parsed.images) ? parsed.images : [],
       draw: { ...DEFAULT_SETTINGS.draw, ...(parsed.draw ?? {}) },
     };

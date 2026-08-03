@@ -34,6 +34,18 @@ body,
   -webkit-app-region: no-drag;
 }
 
+/* Recording toolbar: the title bar is hidden, so the control bar's own
+   background becomes the drag handle. Its buttons opt back out, which leaves
+   the gaps between them draggable — enough to reposition the bar. */
+.toolbar-drag {
+  -webkit-app-region: drag;
+}
+.toolbar-drag button,
+.toolbar-drag input,
+.toolbar-drag [role='button'] {
+  -webkit-app-region: no-drag;
+}
+
 /* Thin scrollbars that match the dark chrome. */
 ::-webkit-scrollbar {
   width: 8px;

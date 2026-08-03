@@ -45,10 +45,19 @@ const useStyles = makeStyles({
     overflow: 'hidden',
     cursor: 'pointer',
     background: tokens.colorNeutralBackground4,
+    // A native <button> does not inherit text colour — it falls back to the
+    // UA default, which is black. On the dark surface that rendered the window
+    // titles as near-invisible black-on-grey, so the colour is set explicitly
+    // rather than left to inheritance.
+    color: tokens.colorNeutralForeground1,
     padding: 0,
     textAlign: 'left',
     display: 'flex',
     flexDirection: 'column',
+    // The same applies to the font: a native button uses the system UI font at
+    // 13.33px unless told otherwise, which is why these labels did not match
+    // the rest of the dialog.
+    fontFamily: tokens.fontFamilyBase,
     ':hover': { background: tokens.colorNeutralBackground4Hover },
   },
   cardActive: {
@@ -60,6 +69,15 @@ const useStyles = makeStyles({
     objectFit: 'cover',
     display: 'block',
     background: '#000',
+  },
+  // Same footprint as a thumbnail so the grid stays even.
+  minimizedThumb: {
+    width: '100%',
+    aspectRatio: '16 / 10',
+    display: 'grid',
+    placeItems: 'center',
+    background: tokens.colorNeutralBackground4,
+    color: tokens.colorNeutralForeground3,
   },
   label: {
     padding: '6px 8px',
@@ -127,6 +145,13 @@ export function SourceDialog({
               </Button>
             </div>
 
+            {!loading && tab === 'window' && filtered.some((x) => x.minimized) && (
+              <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
+                Minimized windows are listed without a preview. Picking one reopens it,
+                since Windows can’t record a minimized window.
+              </Text>
+            )}
+
             {loading ? (
               <div className={s.center}>
                 <Spinner size="tiny" label="Finding sources…" />
@@ -147,7 +172,16 @@ export function SourceDialog({
                     }}
                     title={src.name}
                   >
-                    <img className={s.thumb} src={src.thumbnailDataUrl} alt="" />
+                    {/* Minimized windows have no thumbnail — nothing is
+                        composited while minimized — so show a placeholder
+                        rather than a broken image. */}
+                    {src.minimized ? (
+                      <div className={s.minimizedThumb}>
+                        <Text size={100}>Minimized</Text>
+                      </div>
+                    ) : (
+                      <img className={s.thumb} src={src.thumbnailDataUrl} alt="" />
+                    )}
                     <Text className={s.label} size={100}>
                       {src.name}
                     </Text>

@@ -15,9 +15,12 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { CaptureSource, AppSettings } from '../shared/types';
 import { loadSettings, saveSettings, defaultOutputDir } from './settings';
+import { listAllWindows, restoreWindowForCapture } from './window-list';
 import { remuxToMp4 } from './remux';
+import { ensureScreenPermission, primePermissions } from './mac-permissions';
 import {
   NativeRecorder,
+  listCaptureDevices,
   listDshowAudioDevices,
   listDshowDevices,
   type NativeCameraOptions,
@@ -25,6 +28,22 @@ import {
 
 const isDev = process.env.NODE_ENV === 'development';
 const DEV_SERVER = 'http://localhost:5273';
+
+/**
+ * The window/taskbar icon.
+ *
+ * The installer stamps the icon into the .exe itself, so packaged builds get it
+ * for free; this is what stops the dev run (and the taskbar grouping) from
+ * falling back to Electron's default. Resolved from the app root in dev and
+ * from the asar in production.
+ */
+function appIconPath(): string {
+  const candidates = [
+    path.join(app.getAppPath(), 'build', 'icon.ico'),
+    path.join(process.resourcesPath ?? '', 'build', 'icon.ico'),
+  ];
+  return candidates.find((p) => fs.existsSync(p)) ?? '';
+}
 
 /**
  * Logging that can never take the app down.
@@ -53,6 +72,15 @@ for (const stream of [process.stdout, process.stderr]) {
 
 let controlWindow: BrowserWindow | null = null;
 let overlayWindow: BrowserWindow | null = null;
+/**
+ * On-screen camera bubble, shown while recording when the user opts to keep the
+ * camera visible on the desktop (so the app preview stays live and ffmpeg
+ * captures the bubble as real screen pixels). Deliberately NOT content-
+ * protected — being captured is the whole point.
+ */
+let cameraOverlayWindow: BrowserWindow | null = null;
+/** Zoom-style control strip shown while recording. See createToolbarWindow. */
+let toolbarWindow: BrowserWindow | null = null;
 /** Active ffmpeg-backed recording, when the crisp engine is in use. */
 let nativeRecorder: NativeRecorder | null = null;
 
@@ -60,7 +88,7 @@ let nativeRecorder: NativeRecorder | null = null;
 const APP_ROOT = path.join(__dirname, '..', '..');
 
 /** Resolve a renderer entry to either the dev server or the built file. */
-function rendererUrl(page: 'index' | 'overlay' | 'camera'): string {
+function rendererUrl(page: 'index' | 'overlay' | 'camera' | 'toolbar'): string {
   if (isDev) return `${DEV_SERVER}/${page}.html`;
   return `file://${path.join(APP_ROOT, 'dist', `${page}.html`)}`;
 }
@@ -89,6 +117,7 @@ function createControlWindow() {
     minHeight: 420,
     show: false,
     frame: false,
+    icon: appIconPath() || undefined,
     // Deliberately NOT using backgroundMaterial:'mica'. Mica conflicts with
     // setContentProtection — the combination is unstable and lets the window
     // appear in its own capture, producing the recursive-mirror effect. A
@@ -101,6 +130,15 @@ function createControlWindow() {
       preload: preloadPath(),
       contextIsolation: true,
       nodeIntegration: false,
+      // The browser engine composites every frame on a canvas in THIS window,
+      // and a take parks it off-screen — where Chromium clamps setInterval to
+      // once per second. That is the whole of the "1fps recording" bug: the
+      // frames were never drawn, so no encoder setting could recover them.
+      // The three other windows already set this; the one doing the work did
+      // not. Necessary but NOT sufficient on its own — see recorder.ts, which
+      // drives the compositor from a Worker because an off-screen window is
+      // treated as occluded and throttled regardless of this flag.
+      backgroundThrottling: false,
     },
   });
 
@@ -132,8 +170,10 @@ function createControlWindow() {
 
   controlWindow.on('closed', () => {
     controlWindow = null;
-    // The overlay is a child concept; without the controller it is orphaned.
+    // The overlays are child concepts; without the controller they are orphaned.
     overlayWindow?.close();
+    cameraOverlayWindow?.close();
+    toolbarWindow?.close();
   });
 
   // Open external links in the real browser instead of a new Electron window.
@@ -237,18 +277,286 @@ function refitOverlay() {
   });
 }
 
+/**
+ * The on-screen camera window. Modelled on the drawing overlay — transparent,
+ * always-on-top, click-through — but crucially it is NOT content-protected, so
+ * ffmpeg's screen capture records the camera bubble. It covers a single display
+ * (the one being recorded) rather than the whole virtual desktop, so the bubble
+ * lands in the recording's coordinate space.
+ */
+function createCameraOverlayWindow(display: Electron.Display): BrowserWindow {
+  if (cameraOverlayWindow && !cameraOverlayWindow.isDestroyed()) {
+    cameraOverlayWindow.setBounds(display.bounds);
+    return cameraOverlayWindow;
+  }
+
+  cameraOverlayWindow = new BrowserWindow({
+    ...display.bounds,
+    transparent: true,
+    // Nearly-transparent fill rather than pure transparency.
+    //
+    // A `transparent: true` window on Windows does not reliably clear the
+    // previous frame when only part of its content moves: the layered surface
+    // keeps the old pixels, so dragging the bubble smeared a second copy at
+    // the drag-start position that stayed until a full repaint wiped it (on
+    // release). It reads exactly like a duplicated element, which is why it
+    // survived several attempts to fix it as a React state bug.
+    //
+    // An alpha of 1/255 is invisible but non-zero, which is enough to make the
+    // compositor treat the whole window as needing a repaint each frame. The
+    // drawing overlay never showed this because it redraws its entire canvas.
+    // ARGB: alpha 0x01 out of 0xff. Written in hex rather than rgba() so the
+    // near-zero alpha is unmistakable and cannot be rounded away.
+    backgroundColor: '#01000000',
+    frame: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    fullscreenable: false,
+    type: 'toolbar',
+    show: false,
+    webPreferences: {
+      preload: preloadPath(),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  });
+
+  cameraOverlayWindow.loadURL(rendererUrl('camera'));
+  cameraOverlayWindow.setAlwaysOnTop(true, 'screen-saver');
+  cameraOverlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // Start click-through; the renderer enables interaction only over the bubble.
+  cameraOverlayWindow.setIgnoreMouseEvents(true, { forward: true });
+
+  // Keep the bubble window OUT of the screen capture. The recorder composites
+  // the webcam onto its own canvas (see recorder.ts drawCamera), so if the
+  // desktop capture also picked up this always-on-top window the take would
+  // contain the camera TWICE — the composited copy plus the captured window.
+  // Dragging made it obvious: the two copies feed the encoder from different
+  // pipelines, so one froze at the pre-drag position in the output file even
+  // though the live desktop looked correct. This window is transparent (hence
+  // already layered), so WDA_EXCLUDEFROMCAPTURE / setContentProtection sticks.
+  if (!process.env.EZ_NO_CONTENT_PROTECTION) {
+    cameraOverlayWindow.setContentProtection(true);
+  }
+
+  // Same safety net as the drawing overlay: never leave a desktop-covering
+  // window swallowing input if the renderer loses track of the flag.
+  const forceClickThrough = () => {
+    if (cameraOverlayWindow && !cameraOverlayWindow.isDestroyed()) {
+      cameraOverlayWindow.setIgnoreMouseEvents(true, { forward: true });
+    }
+  };
+  cameraOverlayWindow.webContents.on('render-process-gone', forceClickThrough);
+  cameraOverlayWindow.webContents.on('unresponsive', forceClickThrough);
+  cameraOverlayWindow.on('hide', forceClickThrough);
+
+  cameraOverlayWindow.on('closed', () => {
+    cameraOverlayWindow = null;
+  });
+
+  return cameraOverlayWindow;
+}
+
+/**
+ * Whether the toolbar is hidden from screen capture during a take.
+ *
+ * On by default: the recorder's own chrome has no business appearing in a
+ * tutorial. The cost is that content protection applies to EVERY capture, so
+ * the toolbar also vanishes from Zoom/Teams shares while recording — which is
+ * why this is exposed as a setting rather than hardcoded.
+ */
+let hideToolbarFromCapture = true;
+
+/**
+ * (Re)apply the toolbar's exclusion from screen capture.
+ *
+ * Called after every show and after every click-through toggle, because both
+ * drop the window style the exclusion depends on. Cheap enough to be worth
+ * doing defensively rather than reasoning about which call cleared it.
+ */
+function applyToolbarProtection(): void {
+  if (process.env.EZ_NO_CONTENT_PROTECTION) return;
+  if (!toolbarWindow || toolbarWindow.isDestroyed()) return;
+  if (!toolbarWindow.isVisible()) return;
+  toolbarWindow.setContentProtection(hideToolbarFromCapture);
+}
+
+/** Whether the user pinned the window, so toolbar mode does not un-pin it. */
+let userPinnedOnTop = false;
+
+/**
+ * The recording toolbar: a transparent, full-width, always-on-top strip that
+ * hosts the Zoom-style control bar while a take is running.
+ *
+ * It is a SEPARATE window rather than the control window resized down, and the
+ * reason is popups. A 68px-tall window clips everything it renders — dropdowns
+ * opened inside it, tooltips, the source picker — because a BrowserWindow
+ * cannot draw outside its own bounds. Giving the toolbar a window that spans
+ * the display and is transparent everywhere except the bar itself lets menus
+ * and tooltips lay out normally in the empty space around it.
+ *
+ * Click-through by default, so the transparent area never swallows input; the
+ * renderer opts the bar back in.
+ */
+function createToolbarWindow(display: Electron.Display): BrowserWindow {
+  if (toolbarWindow && !toolbarWindow.isDestroyed()) {
+    toolbarWindow.setBounds(display.bounds);
+    return toolbarWindow;
+  }
+
+  toolbarWindow = new BrowserWindow({
+    ...display.bounds,
+    transparent: true,
+    frame: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    fullscreenable: false,
+    type: 'toolbar',
+    show: false,
+    webPreferences: {
+      preload: preloadPath(),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  });
+
+  // Force the window permanently layered.
+  //
+  // Electron implements content protection as SetWindowDisplayAffinity with
+  // WDA_EXCLUDEFROMCAPTURE, and only keeps it working while the window has
+  // WS_EX_LAYERED. `setIgnoreMouseEvents(false)` clears that style — and this
+  // window toggles click-through constantly, every time the pointer crosses the
+  // bar. Each of those calls silently undid the protection, which is why the
+  // toolbar ended up in recordings while the main window (which never toggles
+  // click-through) has always stayed out of them.
+  //
+  // setOpacity makes Electron mark the window layered for good, so its own
+  // `if (layered_) ex_style |= WS_EX_LAYERED` re-adds the style on every
+  // subsequent call. 0.99 rather than 1.0 because 1.0 is treated as "not
+  // transparent" and skips the layered path.
+  //
+  // Windows-only: this is a workaround for a Win32 style flag. On macOS there
+  // is no WS_EX_LAYERED, setContentProtection uses NSWindow sharingType and is
+  // unaffected by click-through — so 0.99 would just make the toolbar visibly
+  // translucent for no benefit.
+  if (process.platform === 'win32') toolbarWindow.setOpacity(0.99);
+
+  toolbarWindow.loadURL(rendererUrl('toolbar'));
+  toolbarWindow.setAlwaysOnTop(true, 'screen-saver');
+  toolbarWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  toolbarWindow.setIgnoreMouseEvents(true, { forward: true });
+
+  const forceClickThrough = () => {
+    if (toolbarWindow && !toolbarWindow.isDestroyed()) {
+      toolbarWindow.setIgnoreMouseEvents(true, { forward: true });
+    }
+  };
+  toolbarWindow.webContents.on('render-process-gone', forceClickThrough);
+  toolbarWindow.webContents.on('unresponsive', forceClickThrough);
+  toolbarWindow.on('hide', forceClickThrough);
+
+  toolbarWindow.on('closed', () => {
+    toolbarWindow = null;
+  });
+
+  return toolbarWindow;
+}
+
+/**
+ * @param keepControlWindowAlive
+ *   The BROWSER engine composites every frame on a canvas inside the control
+ *   window, so that window has to keep rendering for the whole take. A hidden
+ *   Electron window is detached from the compositor entirely — `hide()` starves
+ *   the canvas regardless of `backgroundThrottling: false`, which only governs
+ *   timer throttling for a window that is still being composited. Measured: a
+ *   30fps request delivered 13.6 unique fps, and a static-content take looks
+ *   like ~1fps.
+ *
+ *   So for that engine the window is moved OFF-SCREEN instead of hidden: still
+ *   composited, still rendering, just not visible. ffmpeg takes are unaffected
+ *   — that pipeline runs in its own process — and keep the plain hide().
+ */
+function enterToolbarMode(keepControlWindowAlive = false) {
+  if (!controlWindow || controlWindow.isDestroyed()) return;
+
+  // The window is built at startup and kept hidden, so this is just a show.
+  // Creating it here instead meant loading React and the whole Fluent bundle
+  // at the moment recording began: the bar took visible seconds to appear, and
+  // if anything went wrong there was no way to stop the take at all.
+  const win = createToolbarWindow(screen.getPrimaryDisplay());
+  win.setBounds(screen.getPrimaryDisplay().bounds);
+  win.showInactive();
+  // AFTER showInactive, not before: hide() clears the display affinity, and
+  // re-applying it while the window is still hidden does not take.
+  applyToolbarProtection();
+  // Re-assert: another always-on-top window (the camera bubble) may have been
+  // shown after this one was created, which would otherwise leave the bar
+  // underneath it.
+  win.setAlwaysOnTop(true, 'screen-saver');
+  // The main window steps aside for the take; the toolbar replaces it.
+  if (keepControlWindowAlive) {
+    // Park it off-screen rather than hiding it, so its canvas keeps
+    // compositing. Bounds are restored in exitToolbarMode.
+    if (!controlBoundsBeforeToolbar) controlBoundsBeforeToolbar = controlWindow.getBounds();
+    const b = controlBoundsBeforeToolbar;
+    // Far enough out that no display can contain it, and excluded from
+    // capture so it cannot appear in the recording even briefly.
+    controlWindow.setBounds({ ...b, x: -32000, y: -32000 });
+    controlWindow.setContentProtection(true);
+  } else {
+    controlWindow.hide();
+  }
+}
+
+/** Real bounds of the control window while it is parked off-screen. */
+let controlBoundsBeforeToolbar: Electron.Rectangle | null = null;
+
+function exitToolbarMode() {
+  if (toolbarWindow && !toolbarWindow.isDestroyed()) {
+    toolbarWindow.setIgnoreMouseEvents(true, { forward: true });
+    toolbarWindow.hide();
+  }
+  if (!controlWindow || controlWindow.isDestroyed()) return;
+  // Undo the off-screen park, if that is how the take hid the window.
+  if (controlBoundsBeforeToolbar) {
+    controlWindow.setBounds(controlBoundsBeforeToolbar);
+    controlWindow.setContentProtection(false);
+    controlBoundsBeforeToolbar = null;
+  }
+  controlWindow.show();
+  if (!userPinnedOnTop) controlWindow.setAlwaysOnTop(false);
+}
+
 // ---------------------------------------------------------------------------
 // IPC
 // ---------------------------------------------------------------------------
 
 function registerIpc() {
   ipcMain.handle('sources:list', async (): Promise<CaptureSource[]> => {
+    // NOTE: minimized windows are absent from this list, and that is
+    // Chromium's behaviour rather than something we filter. A minimized window
+    // has no composited pixels, so the capturer cannot enumerate or record it.
+    // Verified on a desktop with 8 open windows: 4 were minimized and only the
+    // other 4 were returned. Neither the WGC feature flags nor disabling them
+    // changes this. The user-facing fix is to say so in the picker rather than
+    // silently show a short list — restore the window and refresh.
     const sources = await desktopCapturer.getSources({
       types: ['screen', 'window'],
       thumbnailSize: { width: 320, height: 200 },
       fetchWindowIcons: false,
     });
-    return sources
+
+    const listed = sources
       // Filter out our own windows so the user can't record the recorder.
       .filter((s) => !/^Ez Screen Record/.test(s.name))
       .map((s) => ({
@@ -257,7 +565,37 @@ function registerIpc() {
         thumbnailDataUrl: s.thumbnail.toDataURL(),
         displayId: s.display_id || undefined,
         kind: s.id.startsWith('screen:') ? ('screen' as const) : ('window' as const),
+        minimized: false,
       }));
+
+    // Add back the minimized windows Chromium dropped. They have no thumbnail
+    // (nothing is composited while minimized) and are marked so the picker can
+    // show them differently; selecting one restores it first.
+    const seen = new Set(
+      listed.map((s) => s.id.split(':')[1]).filter(Boolean),
+    );
+    for (const win of await listAllWindows()) {
+      if (!win.minimized) continue;
+      if (seen.has(win.handle)) continue;
+      if (/^Ez Screen Record/.test(win.title)) continue;
+      listed.push({
+        id: `window:${win.handle}:0`,
+        name: win.title,
+        thumbnailDataUrl: '',
+        displayId: undefined,
+        kind: 'window' as const,
+        minimized: true,
+      });
+    }
+
+    return listed;
+  });
+
+  /** Un-minimize a window so it can be captured. See window-list.ts. */
+  ipcMain.handle('sources:restoreWindow', async (_e, sourceId: string) => {
+    const handle = sourceId.split(':')[1];
+    if (!handle) return false;
+    return restoreWindowForCapture(handle);
   });
 
   ipcMain.handle('settings:get', () => loadSettings());
@@ -310,6 +648,53 @@ function registerIpc() {
     return true;
   });
 
+  // --- On-screen camera overlay --------------------------------------------
+  /**
+   * Show the camera bubble on the recorded display. `displayId` matches the
+   * capture source; we fall back to the primary display if it can't be
+   * resolved (e.g. a window source rather than a whole screen).
+   */
+  ipcMain.handle('cameraOverlay:show', (_e, displayId?: string) => {
+    const displays = screen.getAllDisplays();
+    const target =
+      (displayId && displays.find((d) => String(d.id) === String(displayId))) ||
+      screen.getPrimaryDisplay();
+    const win = createCameraOverlayWindow(target);
+    win.showInactive(); // never steal focus from what's being demonstrated
+    // show()/showInactive() drops WS_EX_LAYERED-dependent exclusion, so
+    // re-assert it after the window is on screen or the bubble records twice.
+    if (!process.env.EZ_NO_CONTENT_PROTECTION) win.setContentProtection(true);
+    return true;
+  });
+
+  ipcMain.handle('cameraOverlay:hide', () => {
+    // Restore click-through before hiding, never after.
+    cameraOverlayWindow?.setIgnoreMouseEvents(true, { forward: true });
+    cameraOverlayWindow?.hide();
+    return true;
+  });
+
+  /** Toggle whether the camera overlay swallows mouse input. The renderer turns
+   *  this on only while the pointer is over the bubble (so the rest of the
+   *  desktop stays usable), and off again on leave. */
+  ipcMain.handle('cameraOverlay:setInteractive', (_e, interactive: boolean) => {
+    if (!cameraOverlayWindow || cameraOverlayWindow.isDestroyed()) return false;
+    cameraOverlayWindow.setIgnoreMouseEvents(!interactive, { forward: true });
+    // setIgnoreMouseEvents(false) clears WS_EX_LAYERED, which silently drops the
+    // capture exclusion — so grabbing the bubble to drag it would make the
+    // duplicate reappear in the take. Re-assert exclusion after every toggle.
+    if (!process.env.EZ_NO_CONTENT_PROTECTION) {
+      cameraOverlayWindow.setContentProtection(true);
+    }
+    return true;
+  });
+
+  /** Relay control -> camera overlay (camera config + rect updates). */
+  ipcMain.handle('cameraOverlay:send', (_e, channel: string, payload: unknown) => {
+    cameraOverlayWindow?.webContents.send(channel, payload);
+    return true;
+  });
+
   /**
    * Hide the control panel from the capture while recording, so the recorder
    * itself never appears in the tutorial. setContentProtection makes the
@@ -345,8 +730,46 @@ function registerIpc() {
     return true;
   });
   ipcMain.handle('win:setAlwaysOnTop', (_e, flag: boolean) => {
+    userPinnedOnTop = flag;
     controlWindow?.setAlwaysOnTop(flag);
     return flag;
+  });
+
+  /** Collapse to / restore from the recording toolbar. */
+  ipcMain.handle('win:setToolbarMode', (_e, on: boolean, keepAlive = false) => {
+    if (on) enterToolbarMode(keepAlive);
+    else exitToolbarMode();
+    return on;
+  });
+
+  /** Whether the toolbar is invisible to screen capture during a take. */
+  ipcMain.handle('win:setHideFromCapture', (_e, hide: boolean) => {
+    hideToolbarFromCapture = hide;
+    // Applies immediately when toggled mid-take.
+    applyToolbarProtection();
+    return hide;
+  });
+
+  /**
+   * Let the toolbar swallow input only where it actually draws. The window
+   * spans the display so its popups are not clipped, so the transparent
+   * remainder must stay click-through or the desktop becomes unusable.
+   */
+  ipcMain.handle('toolbar:setInteractive', (_e, interactive: boolean) => {
+    if (!toolbarWindow || toolbarWindow.isDestroyed()) return false;
+    toolbarWindow.setIgnoreMouseEvents(!interactive, { forward: true });
+    // This call clears WS_EX_LAYERED, which the capture exclusion depends on,
+    // so the exclusion has to be put back. The renderer toggles this on every
+    // pointer move across the bar, so without this the toolbar reverts to
+    // being recordable within a second of the user reaching for it.
+    applyToolbarProtection();
+    return true;
+  });
+
+  /** Relay control window -> toolbar (state, settings, device lists). */
+  ipcMain.handle('toolbar:send', (_e, channel: string, payload: unknown) => {
+    toolbarWindow?.webContents.send(channel, payload);
+    return true;
   });
 
   // --- Saving --------------------------------------------------------------
@@ -371,8 +794,76 @@ function registerIpc() {
 
   // --- Native (crisp) capture ---------------------------------------------
   ipcMain.handle('native:available', () => NativeRecorder.isAvailable());
+  ipcMain.handle('native:canPause', () => NativeRecorder.canPause());
   ipcMain.handle('native:devices', () => listDshowDevices());
   ipcMain.handle('native:audioDevices', () => listDshowAudioDevices());
+
+  /**
+   * Which display ffmpeg should capture, in its own addressing.
+   *
+   * Windows: ddagrab takes an OUTPUT INDEX, not an Electron display id. The two
+   * are different namespaces, so the Electron id is resolved against
+   * `screen.getAllDisplays()` and its position in that list is used as the
+   * index. Electron enumerates displays in the same order the DXGI adapter
+   * does, so position matches output index in practice. (Returning 0 blindly
+   * would ignore the chosen monitor and always capture the primary display.)
+   *
+   * macOS: avfoundation wants its own *device* index, resolved from ffmpeg's
+   * device list. Screens share the numbering with cameras there, so index 0 is
+   * usually a webcam — hence the lookup rather than a hardcoded 0.
+   */
+  async function resolveDisplayId(electronDisplayId?: string): Promise<number> {
+    if (process.platform !== 'darwin') {
+      if (!electronDisplayId) return 0;
+      const displays = screen.getAllDisplays();
+      const idx = displays.findIndex((d) => String(d.id) === String(electronDisplayId));
+      return idx >= 0 ? idx : 0;
+    }
+    try {
+      const { screens } = await listCaptureDevices();
+      // Prefer the screen matching the requested display, else the first.
+      const match = electronDisplayId
+        ? screens.find((s) => String(s.id) === String(electronDisplayId))
+        : undefined;
+      const id = Number((match ?? screens[0])?.id);
+      return Number.isFinite(id) ? id : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Translate a device *name* into whatever this platform's ffmpeg wants.
+   *
+   * The renderer matches the browser's device label against the ffmpeg device
+   * list and sends a name, which is exactly right on Windows — dshow addresses
+   * devices by name. avfoundation addresses them by index, so on macOS the name
+   * has to be resolved back to one here. Doing it in main keeps the renderer
+   * free of platform-specific device addressing.
+   */
+  async function resolveDeviceId(
+    name: string | null | undefined,
+    kind: 'audio' | 'video',
+  ): Promise<string | null> {
+    if (!name) return null;
+    if (process.platform !== 'darwin') return name;
+    try {
+      const devices = (await listCaptureDevices())[kind];
+      // The renderer may already have sent an index (it echoes back whatever
+      // the device list gave it), so accept that first.
+      const byId = devices.find((d) => d.id === name);
+      if (byId) return byId.id;
+
+      const needle = name.toLowerCase();
+      const byLabel =
+        devices.find((d) => d.label.toLowerCase() === needle) ??
+        devices.find((d) => d.label.toLowerCase().includes(needle)) ??
+        devices.find((d) => needle.includes(d.label.toLowerCase()));
+      return byLabel?.id ?? devices[0]?.id ?? null;
+    } catch {
+      return null;
+    }
+  }
 
   ipcMain.handle(
     'native:start',
@@ -383,14 +874,30 @@ function registerIpc() {
         height?: number;
         quality: 'high' | 'balanced' | 'compact';
         micDeviceName?: string | null;
+        systemAudioEnabled?: boolean;
         camera?: NativeCameraOptions | null;
         outputDir: string | null;
+        /** Electron display id of the chosen screen source. */
+        displayId?: string;
       },
     ) => {
       try {
         if (nativeRecorder?.isRecording) {
           return { ok: false, error: 'A recording is already running.' };
         }
+
+        // macOS blocks screen capture until the app is granted permission, and
+        // ffmpeg's failure in that case says nothing about permissions. Check
+        // first so the user gets the dialog that actually explains it. No-op on
+        // Windows.
+        if (!(await ensureScreenPermission())) {
+          return {
+            ok: false,
+            error:
+              'Screen recording permission is required. Grant it in System Settings, then restart the app.',
+          };
+        }
+
         const dir = opts.outputDir || defaultOutputDir();
         const stamp = new Date()
           .toISOString()
@@ -405,16 +912,87 @@ function registerIpc() {
           fps: opts.fps,
           height: opts.height,
           quality: opts.quality,
-          micDeviceName: opts.micDeviceName ?? null,
-          camera: opts.camera ?? null,
+          micDeviceName: await resolveDeviceId(opts.micDeviceName, 'audio'),
+          systemAudioEnabled: opts.systemAudioEnabled,
+          camera: opts.camera
+            ? {
+                ...opts.camera,
+                deviceName:
+                  (await resolveDeviceId(opts.camera.deviceName, 'video')) ??
+                  opts.camera.deviceName,
+              }
+            : null,
+          displayId: await resolveDisplayId(opts.displayId),
         });
-        return { ok: true, filePath: outputPath };
+        // The moment ffmpeg was launched, not the moment this handler
+        // returned — the renderer's clock is anchored to it, and the gap
+        // between the two is exactly the startup time the timer used to lose.
+        return { ok: true, filePath: outputPath, startedAt: Date.now() - nativeRecorder.elapsedMs };
       } catch (err) {
         nativeRecorder = null;
         return { ok: false, error: (err as Error).message };
       }
     },
   );
+
+  /**
+   * Swap inputs mid-take (monitor, microphone).
+   *
+   * ffmpeg cannot be handed a new device on a running graph, so this splits
+   * the take at the change and respawns — the same segment machinery pause
+   * uses. Only sent for fields that actually changed; the renderer must not
+   * call this on every settings write, since each call costs a real seam.
+   */
+  ipcMain.handle(
+    'native:reconfigure',
+    async (_e, patch: { micDeviceName?: string | null; displayId?: string }) => {
+      try {
+        if (!nativeRecorder) return { ok: false, error: 'Not recording.' };
+
+        const next: Parameters<NativeRecorder['reconfigure']>[0] = {};
+        if ('micDeviceName' in patch) {
+          next.micDeviceName = await resolveDeviceId(patch.micDeviceName, 'audio');
+        }
+        if ('displayId' in patch) {
+          next.displayId = await resolveDisplayId(patch.displayId);
+        }
+
+        await nativeRecorder.reconfigure(next);
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          error: (err as Error).message,
+          paused: nativeRecorder?.isPaused ?? false,
+        };
+      }
+    },
+  );
+
+  /**
+   * Pause/resume the ffmpeg take. Reports the resulting state so the renderer
+   * follows what actually happened rather than what it assumed — a failed
+   * resume must not leave the UI claiming the take is live.
+   */
+  ipcMain.handle('native:pause', async () => {
+    try {
+      if (!nativeRecorder) return { ok: false, error: 'Not recording.' };
+      await nativeRecorder.pause();
+      return { ok: true, paused: true };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message, paused: nativeRecorder?.isPaused ?? false };
+    }
+  });
+
+  ipcMain.handle('native:resume', async () => {
+    try {
+      if (!nativeRecorder) return { ok: false, error: 'Not recording.' };
+      await nativeRecorder.resume();
+      return { ok: true, paused: false };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message, paused: nativeRecorder?.isPaused ?? true };
+    }
+  });
 
   ipcMain.handle('native:stop', async () => {
     try {
@@ -445,11 +1023,17 @@ function registerIpc() {
 
   ipcMain.handle('paths:defaultOutputDir', () => defaultOutputDir());
 
+  // The running build's version, so an installed copy can identify itself.
+  // Read from Electron rather than importing package.json: in a packaged app
+  // the manifest is inside the asar, and app.getVersion() is the value
+  // electron-builder actually stamped into the installer and the exe.
+  ipcMain.handle('app:version', () => app.getVersion());
+
   /**
    * The user's Windows accent colour and light/dark preference, so the app
-   * themes itself like a native one. getAccentColor returns RRGGBBAA — the
-   * alpha is dropped. (Electron's docs mark this macOS-only; it does work on
-   * Windows, but fall back to Windows blue if it ever throws.)
+   * themes itself like a native one. getAccentColor returns RRGGBBAA; the alpha
+   * is dropped. (Electron marks it macOS-only but it works on Windows too.)
+   * Falls back to Windows blue if it throws.
    */
   ipcMain.handle('system:appearance', () => {
     let accent = '#0078d4';
@@ -533,12 +1117,23 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
-    // Grant getDisplayMedia requests using the source the renderer already
-    // picked. The renderer uses the legacy chromeMediaSource constraints path,
-    // but this handler keeps newer Electron versions working too.
-    session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+    // Without an explicit AppUserModelID, Windows groups the taskbar button
+    // under Electron's own identity — wrong icon, wrong name, and shortcuts
+    // pinned from the installer do not match the running app. Must agree with
+    // build.appId in package.json.
+    if (process.platform === 'win32') app.setAppUserModelId('com.joket.ezscreenrecord');
+
+    // Grant getDisplayMedia requests using the source the user picked in our own
+    // UI. The main recorder path uses the legacy chromeMediaSource constraints
+    // and never reaches here; this handler keeps any getDisplayMedia() caller
+    // working too. Honour the persisted screen source instead of blindly taking
+    // sources[0] — the latter always captured the primary display regardless of
+    // what the picker said.
+    session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
       desktopCapturer.getSources({ types: ['screen', 'window'] }).then((sources) => {
-        callback({ video: sources[0], audio: 'loopback' });
+        const wantedId = loadSettings().recording.screenSourceId;
+        const chosen = (wantedId && sources.find((s) => s.id === wantedId)) || sources[0];
+        callback({ video: chosen, audio: 'loopback' });
       });
     });
 
@@ -548,8 +1143,18 @@ if (!gotLock) {
     });
 
     registerIpc();
+
+    // macOS prompts for camera and microphone here, so the user meets those
+    // dialogs while setting up rather than at the moment they press record.
+    // Screen recording is deliberately not prompted at launch — it is asked for
+    // when a recording is actually started. No-op on Windows.
+    void primePermissions();
+
     createControlWindow();
     createOverlayWindow();
+    // Built up front and kept hidden so pressing record shows it instantly,
+    // rather than paying for React and the Fluent bundle mid-take.
+    createToolbarWindow(screen.getPrimaryDisplay());
     registerHotkeys();
 
     // Fires for both light/dark switches and accent-colour changes.

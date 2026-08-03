@@ -1,3 +1,4 @@
+import FrameClockWorker from './frame-clock.worker?worker';
 import { bitrateFor } from '../../shared/types';
 import type { AppSettings, CameraOverlay, ImageOverlay, Rect } from '../../shared/types';
 
@@ -40,10 +41,59 @@ function pickMimeType(): string {
   return '';
 }
 
+/**
+ * A periodic timer that survives window occlusion.
+ *
+ * Chromium clamps `setInterval` in a backgrounded, hidden or off-screen window
+ * to one call per second. A take parks the control window off-screen (so its
+ * canvas keeps compositing while staying out of the capture), which puts the
+ * compositing loop squarely in that clamp. `backgroundThrottling: false` on the
+ * window is necessary but not sufficient — an off-screen window can be treated
+ * as occluded and throttled anyway. Timers inside a Worker have their own task
+ * queue and are not clamped, so the tick is generated there and posted back to
+ * the main thread, which does the drawing.
+ *
+ * The Worker must be a real module (`frame-clock.worker.ts`), not a Blob URL:
+ * the renderer's CSP is `script-src 'self'` and rejects blob: workers.
+ */
+class FrameClock {
+  private worker: Worker | null = null;
+  /** Fallback when the Worker cannot be constructed at all. */
+  private fallbackId: number | null = null;
+
+  constructor(intervalMs: number, onTick: () => void) {
+    try {
+      this.worker = new FrameClockWorker();
+      this.worker.onmessage = onTick;
+      this.worker.postMessage({ interval: intervalMs });
+    } catch (err) {
+      // Degrade to a plain timer rather than record nothing — but this IS the
+      // throttled path, so it costs frame rate. Warn loudly so a regression
+      // here (e.g. the worker failing to load) can't pass unnoticed.
+      console.warn('[recorder] worker timer unavailable, frame rate WILL drop', err);
+      this.fallbackId = window.setInterval(onTick, intervalMs);
+    }
+  }
+
+  stop(): void {
+    if (this.worker) {
+      this.worker.postMessage({ stop: true });
+      this.worker.terminate();
+      this.worker = null;
+    }
+    if (this.fallbackId !== null) {
+      window.clearInterval(this.fallbackId);
+      this.fallbackId = null;
+    }
+  }
+}
+
 export class ScreenRecorder {
   private screenStream: MediaStream | null = null;
   private cameraStream: MediaStream | null = null;
   private micStream: MediaStream | null = null;
+  /** Desktop-audio loopback stream (Windows), kept so it can be stopped on cleanup. */
+  private systemStream: MediaStream | null = null;
 
   private screenVideo: HTMLVideoElement | null = null;
   private cameraVideo: HTMLVideoElement | null = null;
@@ -53,7 +103,7 @@ export class ScreenRecorder {
 
   private recorder: MediaRecorder | null = null;
   private chunks: Blob[] = [];
-  private frameTimer: number | null = null;
+  private frameTimer: FrameClock | null = null;
   private frameIntervalMs = 33;
   private tickId: number | null = null;
 
@@ -174,6 +224,16 @@ export class ScreenRecorder {
 
     const canvasStream = this.canvas.captureStream(recording.fps);
 
+    // Tell the encoder this is SCREEN content, not camera footage, so it
+    // preserves sharpness rather than trading it away to hold a bitrate. This
+    // hint governs the quality/rate trade only, not frame timing.
+    const canvasTrack = canvasStream.getVideoTracks()[0];
+    if (canvasTrack) canvasTrack.contentHint = 'detail';
+
+    // Same for the source: the desktop capture track feeding the canvas.
+    const screenTrack = this.screenStream.getVideoTracks()[0];
+    if (screenTrack) screenTrack.contentHint = 'detail';
+
     // --- Audio mixing ------------------------------------------------------
     const audioTrack = await this.buildAudioTrack(settings);
     if (audioTrack) canvasStream.addTrack(audioTrack);
@@ -214,7 +274,7 @@ export class ScreenRecorder {
     this.recorder.start(1000);
     this.frameIntervalMs = Math.max(8, Math.round(1000 / recording.fps));
     this.renderFrame();
-    this.frameTimer = window.setInterval(this.renderFrame, this.frameIntervalMs);
+    this.frameTimer = new FrameClock(this.frameIntervalMs, this.renderFrame);
 
     this.tickId = window.setInterval(() => {
       this.cbs.onTick?.(this.elapsedMs());
@@ -233,10 +293,8 @@ export class ScreenRecorder {
     this.pausedAt = performance.now();
     // Stop compositing while paused — no point burning CPU on frames that
     // aren't being encoded.
-    if (this.frameTimer !== null) {
-      window.clearInterval(this.frameTimer);
-      this.frameTimer = null;
-    }
+    this.frameTimer?.stop();
+    this.frameTimer = null;
   }
 
   resume(): void {
@@ -245,7 +303,7 @@ export class ScreenRecorder {
     if (this.pausedAt) this.pausedAccum += performance.now() - this.pausedAt;
     this.pausedAt = 0;
     if (this.frameTimer === null) {
-      this.frameTimer = window.setInterval(this.renderFrame, this.frameIntervalMs);
+      this.frameTimer = new FrameClock(this.frameIntervalMs, this.renderFrame);
     }
   }
 
@@ -256,10 +314,8 @@ export class ScreenRecorder {
   }
 
   private stopTimers(): void {
-    if (this.frameTimer !== null) {
-      window.clearInterval(this.frameTimer);
-      this.frameTimer = null;
-    }
+    this.frameTimer?.stop();
+    this.frameTimer = null;
     if (this.tickId !== null) {
       window.clearInterval(this.tickId);
       this.tickId = null;
@@ -489,14 +545,25 @@ export class ScreenRecorder {
 
     if (recording.systemAudioEnabled) {
       try {
-        // Windows loopback capture rides along with a desktop video request.
-        const sys = await navigator.mediaDevices.getUserMedia({
-          audio: { mandatory: { chromeMediaSource: 'desktop' } },
-          video: { mandatory: { chromeMediaSource: 'desktop' } },
-        } as unknown as MediaStreamConstraints);
-        // We only want the audio; drop the redundant video track immediately.
+        // System (desktop) audio on Windows comes from a getDisplayMedia request
+        // that main answers with `audio: 'loopback'` (see the
+        // setDisplayMediaRequestHandler in main.ts). The legacy
+        // getUserMedia({ chromeMediaSource: 'desktop' }) audio path does NOT go
+        // through that handler and yields no loopback track on current Electron,
+        // which is why desktop sound was silently missing from recordings.
+        const sys = await navigator.mediaDevices.getDisplayMedia({
+          audio: true,
+          video: true,
+        });
+        // We only want the audio; drop the video track the handler paired with it.
         sys.getVideoTracks().forEach((t) => t.stop());
-        if (sys.getAudioTracks().length) inputs.push(sys);
+        if (sys.getAudioTracks().length) {
+          this.systemStream = sys;
+          inputs.push(sys);
+        } else {
+          sys.getTracks().forEach((t) => t.stop());
+          console.warn('[recorder] system audio requested but no loopback track was granted');
+        }
       } catch (err) {
         console.warn('[recorder] system audio unavailable', err);
       }
@@ -532,13 +599,10 @@ export class ScreenRecorder {
   }
 
   /**
-   * Composite one frame.
-   *
-   * Deliberately driven by setInterval rather than requestAnimationFrame:
-   * rAF is throttled to ~1fps (or halted entirely) once the control window is
-   * minimised, occluded or backgrounded — which is the normal state while the
-   * user is actually recording something else. A timer keeps compositing at
-   * the requested rate regardless of window visibility.
+   * Composite one frame. Driven by a Worker timer (FrameClock), because while
+   * recording the control window is parked off-screen where rAF is halted and
+   * setInterval is clamped to 1/s — only a Worker's timer is exempt. See
+   * FrameClock for the full rationale.
    */
   private renderFrame = (): void => {
     const ctx = this.ctx;
@@ -646,12 +710,13 @@ export class ScreenRecorder {
 
   private cleanup(): void {
     this.stopTimers();
-    for (const s of [this.screenStream, this.cameraStream, this.micStream]) {
+    for (const s of [this.screenStream, this.cameraStream, this.micStream, this.systemStream]) {
       s?.getTracks().forEach((t) => t.stop());
     }
     this.screenStream = null;
     this.cameraStream = null;
     this.micStream = null;
+    this.systemStream = null;
     this.screenVideo = null;
     this.cameraVideo = null;
     this.micSourceNode?.disconnect();
