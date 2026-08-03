@@ -74,6 +74,10 @@ public sealed class ToolbarWindow : Window
         grip.PointerPressed += OnGripPressed;
         grip.PointerMoved += OnGripMoved;
         grip.PointerReleased += OnGripReleased;
+        // Moving the window under the cursor can drop the capture without ever
+        // raising PointerReleased, which would leave the bar glued to the mouse
+        // -- and this bar holds the only Stop button.
+        grip.PointerCaptureLost += OnGripReleased;
         content.Children.Add(grip);
 
         content.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse
@@ -89,6 +93,13 @@ public sealed class ToolbarWindow : Window
         mic.SetEnabled(settings.Recording.MicEnabled);
         mic.Toggled += on => { settings.Recording.MicEnabled = on; settings.Save(); };
         mic.DeviceSelected += name => { settings.Recording.MicDeviceName = name; settings.Save(); };
+        // Re-enumerate on menu-open so a device plugged in mid-take appears here
+        // too, matching MainWindow.RefreshDevices.
+        mic.DevicesRequested += () =>
+        {
+            Capture.AudioDevices.Refresh();
+            mic.SetDevices(Capture.AudioDevices.ListMicrophones(), settings.Recording.MicDeviceName);
+        };
         content.Children.Add(mic);
 
         var cam = new PillControl("Camera", Glyphs.Video, Glyphs.VideoOff);
@@ -96,6 +107,11 @@ public sealed class ToolbarWindow : Window
         cam.SetEnabled(settings.Camera.Enabled);
         cam.Toggled += on => { settings.Camera.Enabled = on; settings.Save(); };
         cam.DeviceSelected += name => { settings.Camera.DeviceName = name; settings.Save(); };
+        cam.DevicesRequested += () =>
+        {
+            Capture.AudioDevices.Refresh();
+            cam.SetDevices(Capture.AudioDevices.ListCameras(), settings.Camera.DeviceName);
+        };
         content.Children.Add(cam);
 
         content.Children.Add(Round(Glyphs.Desktop, "Change source", () => SourceRequested?.Invoke()));
@@ -214,6 +230,15 @@ public sealed class ToolbarWindow : Window
     /// Called once the bar has measured itself; until then its ActualWidth is
     /// zero and the window would collapse.
     /// </summary>
+    /// <summary>
+    /// Set once the user drags the bar, so later re-measures resize it in place
+    /// instead of yanking it back to the top centre. The bar re-measures
+    /// whenever a pill changes width -- toggling the mic, pausing -- so without
+    /// this the toolbar jumps back to the middle of the screen mid-take, right
+    /// after the user moved it out of the way of what they are demonstrating.
+    /// </summary>
+    private bool _userPositioned;
+
     private void PositionBar()
     {
         if (_bar.ActualWidth <= 0) return;
@@ -225,11 +250,23 @@ public sealed class ToolbarWindow : Window
         var area = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary);
         var work = area.WorkArea;
 
-        AppWindow.MoveAndResize(new RectInt32(
-            work.X + (work.Width - width) / 2,
-            work.Y + 14,
-            width,
-            height));
+        int x, y;
+        if (_userPositioned)
+        {
+            x = AppWindow.Position.X;
+            y = AppWindow.Position.Y;
+
+            // A wider bar must not push its own controls off-screen.
+            x = Math.Max(work.X, Math.Min(x, work.X + work.Width - width));
+            y = Math.Max(work.Y, Math.Min(y, work.Y + work.Height - height));
+        }
+        else
+        {
+            x = work.X + (work.Width - width) / 2;
+            y = work.Y + 14;
+        }
+
+        AppWindow.MoveAndResize(new RectInt32(x, y, width, height));
 
         Canvas.SetLeft(_bar, 0);
         Canvas.SetTop(_bar, 0);
@@ -292,6 +329,7 @@ public sealed class ToolbarWindow : Window
     private void OnGripPressed(object sender, PointerRoutedEventArgs e)
     {
         _dragging = true;
+        _userPositioned = true;
         GetCursorPos(out _dragOrigin);
         _windowStart = AppWindow.Position;
         ((UIElement)sender).CapturePointer(e.Pointer);

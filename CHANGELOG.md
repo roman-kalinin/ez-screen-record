@@ -3,8 +3,37 @@
 Versions follow [semver](https://semver.org/): `MAJOR.MINOR.PATCH` — a patch
 release is bugfixes only, a minor release adds behaviour, a major release breaks
 something. The version is stamped into the installer filename
-(`Ez Screen Record Setup 1.1.0.exe`) and shown in the app's Settings menu, so an
+(`Ez Screen Record Setup 1.2.0.exe`) and shown in the app's Settings menu, so an
 installed copy can always be identified.
+
+## 1.2.0 — 2026-08-03
+
+### Added
+- **System (desktop) audio on the ffmpeg "crisp" engine (Windows).** ffmpeg has
+  no WASAPI/loopback input on Windows, so a small bundled helper
+  (`ez-audio-loopback.exe`) captures the default playback endpoint to a WAV,
+  which is muxed into the finished recording. The helper pauses and resumes in
+  lockstep with the take's segment boundaries, so the audio drops exactly the
+  same span the video does and never drifts. When a microphone is also recorded
+  the two are mixed; muxing is best-effort, so a failure leaves a valid,
+  audio-less recording rather than losing the take.
+
+### Fixed
+- **System audio on the browser ("overlay") engine.** It used a legacy
+  `getUserMedia({ chromeMediaSource: 'desktop' })` loopback path that yields no
+  audio track on current Electron, so desktop sound was silently missing. It now
+  uses `getDisplayMedia` answered with `audio: 'loopback'`, the supported route.
+- **The on-screen camera bubble no longer duplicates or ghosts in the
+  recording.** Dragging it left a frozen copy at the old position (the overlay
+  window was captured *and* composited — now excluded from capture), teleported
+  on release (the live rect is now streamed to the recorder each frame), and
+  left a stale ghost on the layered window (now repainted per frame).
+
+### Housekeeping
+- Repo-wide cleanup: corrected inaccurate comments, removed dead code, and fixed
+  three latent bugs (wrong-display fallback in the display-media handler,
+  front-trimming that deleted the user's oldest image overlays past the cap, and
+  the toolbar not re-enumerating devices plugged in mid-take).
 
 ## 1.1.0 — 2026-08-03
 

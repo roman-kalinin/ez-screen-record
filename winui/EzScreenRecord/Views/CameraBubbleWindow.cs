@@ -58,20 +58,6 @@ public sealed class CameraBubbleWindow : Window
     /// </summary>
     private void OnFrame(Windows.Media.Capture.Frames.MediaFrameReader sender, object args)
     {
-        using var frame = sender.TryAcquireLatestFrame();
-        var bitmap = frame?.VideoMediaFrame?.SoftwareBitmap;
-        if (bitmap is null) return;
-
-        // SoftwareBitmapSource requires BGRA8 premultiplied.
-        var converted =
-            bitmap.BitmapPixelFormat == Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8 &&
-            bitmap.BitmapAlphaMode == Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied
-                ? bitmap
-                : Windows.Graphics.Imaging.SoftwareBitmap.Convert(
-                    bitmap,
-                    Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
-                    Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied);
-
         // A timestamp, not a boolean flag.
         //
         // A bool latch deadlocks: while the window is being dragged or resized,
@@ -81,19 +67,59 @@ public sealed class CameraBubbleWindow : Window
         // never recovers, because nothing else clears the latch.
         //
         // A deadline lets the next frame through once the previous one has had
-        // long enough, whether or not its callback ever ran.
+        // long enough, whether or not its callback ever ran. Checked before the
+        // frame is acquired so a dropped frame costs nothing.
         var now = Environment.TickCount64;
         if (now < _frameBusyUntil) return;
+
+        using var frame = sender.TryAcquireLatestFrame();
+        var bitmap = frame?.VideoMediaFrame?.SoftwareBitmap;
+        if (bitmap is null) return;
+
+        // SoftwareBitmapSource requires BGRA8 premultiplied, and the handoff to
+        // the UI thread is asynchronous -- so this must be a bitmap we own.
+        //
+        // Returning `bitmap` itself when the format already matched aliased the
+        // frame's own buffer, which the `using` above disposes as soon as this
+        // method returns: SetBitmapAsync then ran against a disposed bitmap,
+        // threw, and was swallowed. On a webcam that natively delivers BGRA8
+        // that happened to every single frame, so the bubble showed nothing at
+        // all for the whole session.
+        Windows.Graphics.Imaging.SoftwareBitmap converted;
+        try
+        {
+            converted = Windows.Graphics.Imaging.SoftwareBitmap.Convert(
+                bitmap,
+                Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
+                Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied);
+        }
+        catch
+        {
+            return;
+        }
+
         _frameBusyUntil = now + FrameTimeoutMs;
 
         var queued = DispatcherQueue.TryEnqueue(async () =>
         {
             try { await _frames.SetBitmapAsync(converted); }
             catch { /* the window closed mid-frame */ }
-            finally { _frameBusyUntil = 0; }
+            finally
+            {
+                // Convert always allocates, so every frame owns a native
+                // buffer that only this dispose releases. At 30fps a leak here
+                // is ~120 MB/s of unmanaged memory that the GC has no pressure
+                // signal to reclaim.
+                converted.Dispose();
+                _frameBusyUntil = 0;
+            }
         });
 
-        if (!queued) _frameBusyUntil = 0;
+        if (!queued)
+        {
+            converted.Dispose();
+            _frameBusyUntil = 0;
+        }
     }
 
     private bool _dragging;
@@ -126,6 +152,11 @@ public sealed class CameraBubbleWindow : Window
         _frame.PointerPressed += OnPointerPressed;
         _frame.PointerMoved += OnPointerMoved;
         _frame.PointerReleased += OnPointerReleased;
+        // Moving the window out from under the cursor drops the capture without
+        // ever raising PointerReleased. Without this the drag flags stay set,
+        // the bubble follows the mouse for the rest of the session, and the new
+        // position is never saved -- only a restart clears it.
+        _frame.PointerCaptureLost += OnPointerReleased;
         _frame.SizeChanged += (_, _) => ApplyShape();
 
         Content = _frame;
@@ -363,6 +394,20 @@ public sealed class CameraBubbleWindow : Window
         var dx = cursor.X - _dragOrigin.X;
         var dy = cursor.Y - _dragOrigin.Y;
 
+        // Throttle the geometry calls.
+        //
+        // AppWindow.Move/MoveAndResize are synchronous SetWindowPos calls that
+        // pump messages on the UI thread. Pointer moves arrive far faster than
+        // a window can be repositioned, so calling one per message starves the
+        // dispatcher: the queued camera frames never run and the feed sits
+        // frozen for the whole drag, then jumps when the mouse stops.
+        //
+        // One update per frame interval is smooth to the eye and leaves the
+        // thread free to actually paint the camera.
+        var now = Environment.TickCount64;
+        if (now - _lastGeometryAt < GeometryIntervalMs) return;
+        _lastGeometryAt = now;
+
         if (_dragging)
         {
             AppWindow.Move(new PointInt32(_windowStart.X + dx, _windowStart.Y + dy));
@@ -383,6 +428,10 @@ public sealed class CameraBubbleWindow : Window
         AppWindow.MoveAndResize(new RectInt32(x, y, width, height));
     }
 
+    /// <summary>~60Hz: smooth to drag, cheap enough to leave the UI thread free.</summary>
+    private const int GeometryIntervalMs = 16;
+    private long _lastGeometryAt;
+
     [System.Runtime.InteropServices.StructLayout(
         System.Runtime.InteropServices.LayoutKind.Sequential)]
     private struct POINT { public int X; public int Y; }
@@ -402,6 +451,27 @@ public sealed class CameraBubbleWindow : Window
     private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
     {
         if (!_dragging && !_resizing) return;
+
+        // Apply the final cursor position: the throttle above may have dropped
+        // the last move, which would otherwise leave the bubble a few pixels
+        // behind where the mouse was released.
+        GetCursorPos(out var cursor);
+        var dx = cursor.X - _dragOrigin.X;
+        var dy = cursor.Y - _dragOrigin.Y;
+
+        if (_dragging)
+        {
+            AppWindow.Move(new PointInt32(_windowStart.X + dx, _windowStart.Y + dy));
+        }
+        else
+        {
+            const int min = 120;
+            var width = Math.Max(min, _sizeStart.Width + (_resizeLeft ? -dx : dx));
+            var height = Math.Max(min, _sizeStart.Height + (_resizeTop ? -dy : dy));
+            var x = _resizeLeft ? _windowStart.X + (_sizeStart.Width - width) : _windowStart.X;
+            var y = _resizeTop ? _windowStart.Y + (_sizeStart.Height - height) : _windowStart.Y;
+            AppWindow.MoveAndResize(new RectInt32(x, y, width, height));
+        }
 
         _dragging = false;
         _resizing = false;

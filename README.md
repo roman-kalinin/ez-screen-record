@@ -17,11 +17,20 @@ For development with hot-reloading renderers:
 npm run dev
 ```
 
-To produce an installer (`dist_electron/`):
+To produce the Windows installer (output in `release/`):
 
 ```powershell
 npm run dist
 ```
+
+On a **Mac**, build the macOS app (`.dmg` in `release/`) with one command:
+
+```sh
+./scripts/build-mac.sh
+```
+
+See [INSTALL-MACOS.md](INSTALL-MACOS.md) for building and installing on macOS,
+including Gatekeeper/quarantine and permission steps.
 
 ## How it works
 

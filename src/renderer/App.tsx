@@ -10,6 +10,13 @@ import {
   Menu,
   MenuTrigger,
   MenuPopover,
+  Dialog,
+  DialogTrigger,
+  DialogSurface,
+  DialogBody,
+  DialogTitle,
+  DialogContent,
+  Spinner,
   Toaster,
   useToastController,
   Toast,
@@ -31,7 +38,6 @@ import {
   PlayFilled,
   InkStrokeRegular,
   ImageAddRegular,
-  ImageRegular,
   DeleteRegular,
   SettingsRegular,
   PinRegular,
@@ -42,8 +48,6 @@ import {
   VideoOffRegular,
   MicRegular,
   MicOffRegular,
-  Speaker2Regular,
-  SpeakerOffRegular,
   DesktopRegular,
   QuestionRegular,
 } from '@fluentui/react-icons';
@@ -56,6 +60,7 @@ import {
   RESOLUTIONS,
   FPS_OPTIONS,
   QUALITY_PRESETS,
+  CAPTURE_ENGINES,
   type AppSettings,
   type CaptureEngine,
   type CaptureSource,
@@ -151,13 +156,18 @@ const useStyles = makeStyles({
     background: tokens.colorPaletteRedBackground3,
     ':hover': { background: tokens.colorPaletteRedForeground1 },
   },
+  /** Roomy modal rather than a cramped popover hanging off the toolbar. */
+  settingsSurface: {
+    maxWidth: '560px',
+  },
   settingsPanel: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '6px',
-    padding: '12px',
-    minWidth: '260px',
-    maxWidth: '320px',
+    gap: '8px',
+    // Long enough to need scrolling on a short screen, never taller than one.
+    maxHeight: '65vh',
+    overflowY: 'auto',
+    paddingRight: '4px',
   },
   imageList: {
     display: 'flex',
@@ -333,6 +343,7 @@ export function App() {
   const [sources, setSources] = useState<CaptureSource[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(true);
   const [sourceDialogOpen, setSourceDialogOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [nativeAvailable, setNativeAvailable] = useState(false);
   /** ffmpeg can rejoin paused segments, so pause is safe to offer. */
   const [nativeCanPause, setNativeCanPause] = useState(false);
@@ -362,6 +373,15 @@ export function App() {
    * interleave two of them and leave orphaned segments.
    */
   const pausingRef = useRef(false);
+  /** Guards reconfigure, which respawns ffmpeg just as pause/resume do. */
+  const reconfiguringRef = useRef(false);
+  /**
+   * What the ffmpeg take is CURRENTLY capturing. The effects fire on mount and
+   * on any dependency change, so without these a take would respawn ffmpeg
+   * immediately after starting, for a change that never happened.
+   */
+  const lastNativeSourceRef = useRef<string | null>(null);
+  const lastNativeMicRef = useRef<string | null>(null);
   /** Total paused time in an ffmpeg take, so the timer excludes it. */
   const nativePausedTotalRef = useRef(0);
   const nativePausedAtRef = useRef(0);
@@ -468,7 +488,6 @@ export function App() {
   }, [cams, loaded, settings.camera.deviceId]);
 
   // Push live overlay geometry changes into an in-progress recording.
-  // Push live overlay geometry changes into an in-progress recording.
   useEffect(() => {
     if (isActiveTake(state)) {
       void recorderRef.current.updateCamera(settings.camera);
@@ -481,21 +500,6 @@ export function App() {
     }
   }, [settings.images, state]);
 
-  // Sources can be changed mid-take — switch monitor, swap mic — without
-  // interrupting the recording.
-  useEffect(() => {
-    if (!isActiveTake(state)) return;
-    const id = settings.recording.screenSourceId;
-    if (id) void recorderRef.current.updateScreenSource(id, settings.recording.fps);
-  }, [settings.recording.screenSourceId, settings.recording.fps, state]);
-
-  useEffect(() => {
-    if (!isActiveTake(state)) return;
-    void recorderRef.current.updateMicrophone(
-      settings.recording.micDeviceId,
-      settings.recording.micEnabled,
-    );
-  }, [settings.recording.micDeviceId, settings.recording.micEnabled, state]);
 
   // --- Recording control -----------------------------------------------------
   const finishRecording = useCallback(
@@ -544,6 +548,16 @@ export function App() {
       } catch (err) {
         notify('Could not save recording', (err as Error).message, 'error');
       } finally {
+        // Put the control window back and take the bubble down. The ffmpeg
+        // path does this inline in stopRecording; the browser path finishes
+        // asynchronously here, so without it the main window stayed hidden
+        // behind a toolbar for a take that had already ended.
+        if (onScreenCameraRef.current) {
+          onScreenCameraRef.current = false;
+          void window.ez.cameraOverlay.hide();
+        }
+        void window.ez.window.setToolbarMode(false);
+        stateRef.current = 'idle';
         setState('idle');
         setElapsed(0);
       }
@@ -569,14 +583,129 @@ export function App() {
     });
   }, []);
 
+  /**
+   * Apply a mid-take input swap on the ffmpeg engine.
+   *
+   * Shows the seam rather than hiding it: respawning ffmpeg takes ~2s, and a
+   * UI that pretends otherwise is exactly the "nothing happened" the old code
+   * produced. Uses the 'resuming' state, which already renders as a held take
+   * coming back.
+   */
+  const applyNativeReconfigure = useCallback(
+    async (patch: { micDeviceName?: string | null; displayId?: string }, what: string) => {
+      if (reconfiguringRef.current) return;
+      reconfiguringRef.current = true;
+
+      const prev = stateRef.current;
+      stateRef.current = 'resuming';
+      setState('resuming');
+      pushToolbarState();
+
+      try {
+        const res = await window.ez.native.reconfigure(patch);
+        if (!res.ok) {
+          notify(`Could not change the ${what}`, res.error, 'error');
+          // A failed swap leaves the recorder held; say so rather than
+          // claiming the take is live.
+          const next: RecordingState = res.paused ? 'paused' : prev;
+          stateRef.current = next;
+          setState(next);
+        } else {
+          stateRef.current = 'recording';
+          setState('recording');
+        }
+      } finally {
+        reconfiguringRef.current = false;
+        pushToolbarState();
+      }
+    },
+    [notify],
+  );
+
+  // Sources can be changed mid-take — switch monitor, swap mic — without
+  // interrupting the recording.
+  //
+  // Both engines are handled. These used to call recorderRef (the BROWSER
+  // recorder) unconditionally, which is inactive during an ffmpeg take, so
+  // every live change was silently dropped on the engine that actually
+  // records. ffmpeg cannot be reconfigured in place, so the native path
+  // splits the take and respawns — see NativeRecorder.reconfigure.
+  useEffect(() => {
+    if (!isActiveTake(state)) return;
+    const id = settings.recording.screenSourceId;
+    if (!id) return;
+
+    if (nativeStartRef.current) {
+      // Skip the initial run: the take already started on this source, and
+      // respawning for a no-op change would cost a pointless seam.
+      if (lastNativeSourceRef.current === id) return;
+      lastNativeSourceRef.current = id;
+      const displayId = sourcesRef.current.find((x) => x.id === id)?.displayId;
+      void applyNativeReconfigure({ displayId }, 'source');
+      return;
+    }
+    void recorderRef.current.updateScreenSource(id, settings.recording.fps);
+  }, [settings.recording.screenSourceId, settings.recording.fps, state, applyNativeReconfigure]);
+
+  useEffect(() => {
+    if (!isActiveTake(state)) return;
+
+    if (nativeStartRef.current) {
+      const key = `${settings.recording.micEnabled}:${settings.recording.micDeviceId ?? ''}`;
+      if (lastNativeMicRef.current === key) return;
+      lastNativeMicRef.current = key;
+      // ffmpeg addresses devices by name; match the browser label to the
+      // dshow name the same way beginRecording does.
+      const label = micsRef.current
+        .find((m) => m.deviceId === settings.recording.micDeviceId)
+        ?.label.replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, '')
+        .toLowerCase();
+      const micName = settings.recording.micEnabled
+        ? (label && nativeMicsRef.current.find((n) => n.toLowerCase().includes(label))) ??
+          nativeMicsRef.current[0] ??
+          null
+        : null;
+      void applyNativeReconfigure({ micDeviceName: micName }, 'microphone');
+      return;
+    }
+    void recorderRef.current.updateMicrophone(
+      settings.recording.micDeviceId,
+      settings.recording.micEnabled,
+    );
+  }, [
+    settings.recording.micDeviceId,
+    settings.recording.micEnabled,
+    state,
+    applyNativeReconfigure,
+  ]);
+
+
   const beginRecording = useCallback(async () => {
     const cfg = settingsRef.current.recording;
 
-    // GPU path: ffmpeg captures, composites via libplacebo (Vulkan) and
-    // encodes in 4:4:4. Used whenever it is available, since it is strictly
-    // better than the browser encoder — the fallback exists only for machines
-    // without a suitable ffmpeg build.
-    if (nativeAvailableRef.current) {
+    // Which engine records this take.
+    //
+    // The user's choice, not just "ffmpeg if present". ffmpeg is sharper but
+    // captures whole displays only -- ddagrab has no window capture at all --
+    // so picking a window silently recorded the full screen instead. The
+    // browser engine handles windows and swaps sources mid-take with no seam.
+    //
+    // A window source therefore FORCES the browser engine regardless of the
+    // setting: honouring 'crisp' there would record something the user did not
+    // ask for, which is worse than quietly using the other engine.
+    const picked = sourcesRef.current.find((x) => x.id === cfg.screenSourceId);
+    const needsBrowser = picked?.kind === 'window';
+    const useNative = nativeAvailableRef.current && cfg.engine === 'crisp' && !needsBrowser;
+
+    if (needsBrowser && cfg.engine === 'crisp') {
+      notify(
+        'Recording this window with the flexible engine',
+        'The best-quality engine can only capture a whole screen.',
+        'warning',
+      );
+    }
+
+    if (useNative) {
       const micName = cfg.micEnabled
         ? nativeMicsRef.current.find((n) =>
             n.toLowerCase().includes(
@@ -648,11 +777,18 @@ export function App() {
         height: cfg.resolution === 'source' ? undefined : Number(cfg.resolution),
         quality: cfg.quality,
         micDeviceName: micName,
+        // Desktop audio is captured by a WASAPI loopback helper and muxed in
+        // (ffmpeg has no loopback input on Windows). No-op if the helper is
+        // absent, e.g. on macOS.
+        systemAudioEnabled: cfg.systemAudioEnabled,
         // Always null: the bubble is already on the desktop and the screen
         // capture records it. Handing the camera to ffmpeg as well would both
         // duplicate it and re-introduce the framesync gate.
         camera: null,
         outputDir: cfg.outputDir,
+        // Which monitor to capture. Without this ddagrab always took output
+        // index 0, so the chosen display was ignored on every take.
+        displayId: sourcesRef.current.find((x) => x.id === cfg.screenSourceId)?.displayId,
       });
 
       if (!res.ok) {
@@ -669,6 +805,10 @@ export function App() {
       nativeStartRef.current = res.startedAt ?? Date.now();
       nativePausedTotalRef.current = 0;
       nativePausedAtRef.current = 0;
+      // Seed what the take is capturing, so the live-change effects treat
+      // their first run as a no-op rather than an immediate respawn.
+      lastNativeSourceRef.current = cfg.screenSourceId;
+      lastNativeMicRef.current = `${cfg.micEnabled}:${cfg.micDeviceId ?? ''}`;
       stateRef.current = 'recording';
       setState('recording');
       // Take the toolbar out of "Starting…" — it has no other way to know.
@@ -676,21 +816,39 @@ export function App() {
       return;
     }
 
+    // Browser engine. Same chrome as the ffmpeg path -- the toolbar and the
+    // hidden control window are how a take LOOKS, and they have nothing to do
+    // with which encoder is running. Only the ffmpeg branch raised them, so
+    // choosing this engine left the control window sitting in the recording
+    // with no toolbar at all.
     try {
+      stateRef.current = 'starting';
+      setState('starting');
+      pushToolbarState();
+      void window.ez.toolbar.send('toolbar:elapsed', 0);
+      // keepAlive: this engine composites in THIS window, so it must stay
+      // rendered. Hiding it dropped a 30fps take to ~13.6 unique fps.
+      await window.ez.window.setToolbarMode(true, true);
+
       await recorderRef.current.start(settingsRef.current, {
         onTick: setElapsed,
         onStop: finishRecording,
         onError: (e) => {
           notify('Recording error', e.message, 'error');
+          void window.ez.window.setToolbarMode(false);
           setState('idle');
         },
       });
+      stateRef.current = 'recording';
       setState('recording');
+      pushToolbarState();
     } catch (err) {
+      stateRef.current = 'idle';
+      void window.ez.window.setToolbarMode(false);
       notify('Could not start recording', (err as Error).message, 'error');
       setState('idle');
     }
-  }, [finishRecording, notify]);
+  }, [finishRecording, notify, pushToolbarState]);
 
   const startWithCountdown = useCallback(async () => {
     // Guard against re-entry: React state is async, so two fast clicks (or
@@ -740,11 +898,19 @@ export function App() {
     }
 
     if (nativeStartRef.current) {
+      // Push it, don't just set it: the toolbar is a separate window and only
+      // learns the state when it is sent one. Without this the bar kept
+      // showing a live timer and an armed stop button while ffmpeg was
+      // finalising the file.
+      stateRef.current = 'saving';
       setState('saving');
+      pushToolbarState();
       const res = await window.ez.native.stop();
       nativeStartRef.current = 0;
       nativePausedTotalRef.current = 0;
       nativePausedAtRef.current = 0;
+      lastNativeSourceRef.current = null;
+      lastNativeMicRef.current = null;
       if (res.ok && res.filePath) {
         const p = res.filePath;
         dispatchToast(
@@ -784,8 +950,16 @@ export function App() {
       return;
     }
 
+    // Browser path. stop() is asynchronous: MediaRecorder has to flush its
+    // last chunks, then finishRecording concatenates the blob, writes it to
+    // disk and remuxes it through ffmpeg — seconds of work on a long take,
+    // during which the UI otherwise still read "recording" and the take looked
+    // stuck. finishRecording returns to 'idle' when it is genuinely done.
+    stateRef.current = 'saving';
+    setState('saving');
+    pushToolbarState();
     recorderRef.current.stop();
-  }, [dispatchToast, notify]);
+  }, [dispatchToast, notify, pushToolbarState]);
 
   const togglePause = useCallback(async () => {
     let next: RecordingState;
@@ -913,19 +1087,17 @@ export function App() {
   const activeSourceName =
     sources.find((x) => x.id === settings.recording.screenSourceId)?.name ?? '';
 
-  // Deliberately split in two, and `elapsed` is NOT a dependency here.
-  //
-  // The elapsed timer ticks 5x a second, and sending the whole state object —
-  // including both full device lists — on every tick meant an IPC round trip
-  // and a re-render of the toolbar window 5x a second, for the entire take.
-  // That showed up in recordings as a ~300ms stall every ~0.5s, right through.
-  // This effect now fires only when something a human changed actually changes.
-  // The toolbar asks for state when it mounts; without this it would render
-  // nothing until the next change happened to be pushed.
+  // The toolbar asks for its full state when it mounts; without this it would
+  // render nothing until the next change happened to be pushed.
   useEffect(() => window.ez.on('toolbar:requestState', () => pushToolbarState()), [
     pushToolbarState,
   ]);
 
+  // Push toolbar state only when a human-changed field changes — deliberately
+  // NOT keyed on `elapsed`. The elapsed timer ticks 5x a second, and sending
+  // the whole state object (including both full device lists) on every tick
+  // meant an IPC round trip plus a toolbar re-render 5x a second for the whole
+  // take — a ~300ms stall every ~0.5s, visible right through the recording.
   useEffect(() => {
     if (!isActiveTake(state)) return;
     void window.ez.toolbar.send('toolbar:state', {
@@ -1359,19 +1531,64 @@ export function App() {
           </Tooltip>
         )}
 
-        <Menu>
-          <MenuTrigger disableButtonEnhancement>
+        <Dialog open={settingsOpen} onOpenChange={(_e, d) => setSettingsOpen(d.open)}>
+          <DialogTrigger disableButtonEnhancement>
             <Tooltip content="Settings" relationship="label" withArrow>
               <button className={s.roundBtn} aria-label="Settings">
                 <SettingsRegular fontSize={20} />
               </button>
             </Tooltip>
-          </MenuTrigger>
-          <MenuPopover>
-            <div className={s.settingsPanel}>
+          </DialogTrigger>
+          <DialogSurface className={s.settingsSurface}>
+            <DialogBody>
+              <DialogTitle
+                action={
+                  <DialogTrigger action="close">
+                    <Button appearance="subtle" icon={<DismissRegular />} aria-label="Close" />
+                  </DialogTrigger>
+                }
+              >
+                Settings
+              </DialogTitle>
+              <DialogContent className={s.settingsPanel}>
+              <Text size={200} weight="semibold">
+                Capture engine
+              </Text>
+
+              <Dropdown
+                size="small"
+                disabled={busy}
+                value={
+                  CAPTURE_ENGINES.find((e) => e.value === settings.recording.engine)?.label ??
+                  CAPTURE_ENGINES[0].label
+                }
+                selectedOptions={[settings.recording.engine]}
+                onOptionSelect={(_e, d) =>
+                  setSettings((p) => ({
+                    ...p,
+                    recording: {
+                      ...p.recording,
+                      engine: (d.optionValue as CaptureEngine) ?? 'crisp',
+                    },
+                  }))
+                }
+              >
+                {CAPTURE_ENGINES.map((e) => (
+                  <Option key={e.value} value={e.value} text={e.label}>
+                    {e.label}
+                  </Option>
+                ))}
+              </Dropdown>
+              <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
+                {CAPTURE_ENGINES.find((e) => e.value === settings.recording.engine)?.detail}
+              </Text>
+
+              <Divider />
+
               <Text size={200} weight="semibold">
                 Quality
               </Text>
+
               <Dropdown
                 size="small"
                 disabled={busy}
@@ -1391,22 +1608,29 @@ export function App() {
                 }
               >
                 {QUALITY_PRESETS.map((q) => (
-                  <Option key={q.value} value={q.value}>
+                  <Option key={q.value} value={q.value} text={q.label}>
                     {q.label}
                   </Option>
                 ))}
               </Dropdown>
-              {!nativeAvailable && (
+              <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
+                {QUALITY_PRESETS.find((q) => q.value === settings.recording.quality)?.detail}
+              </Text>
+              {!nativeAvailable && settings.recording.engine === 'crisp' && (
                 <Text size={100} style={{ color: tokens.colorPaletteRedForeground1 }}>
-                  ffmpeg with libplacebo was not found — falling back to the browser
-                  encoder, which produces softer text.
+                  ffmpeg was not found — the flexible engine will be used instead, which
+                  produces softer text.
                 </Text>
               )}
 
               <Divider />
 
               <Text size={200} weight="semibold">
-                Resolution
+                Resolution & frame rate
+              </Text>
+
+              <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
+                How many pixels. Quality above sets how much detail is kept in each.
               </Text>
               <Dropdown
                 size="small"
@@ -1494,6 +1718,10 @@ export function App() {
 
               <Divider />
 
+              <Text size={200} weight="semibold">
+                Recording behaviour
+              </Text>
+
               <Switch
                 checked={settings.recording.hideToolbarFromCapture}
                 label="Hide the toolbar from the recording"
@@ -1515,6 +1743,7 @@ export function App() {
               <Text size={200} weight="semibold">
                 Save to
               </Text>
+
               <div className={s.row}>
                 <Text
                   size={100}
@@ -1542,7 +1771,6 @@ export function App() {
                 </Button>
               </div>
 
-              <Divider />
 
               {/* Which build this is. Every installer carries its version in
                   the filename, but once installed there was no way to tell
@@ -1550,9 +1778,10 @@ export function App() {
               <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
                 Ez Screen Record {appVersion ? `v${appVersion}` : ''}
               </Text>
-            </div>
-          </MenuPopover>
-        </Menu>
+              </DialogContent>
+            </DialogBody>
+          </DialogSurface>
+        </Dialog>
 
         <Menu>
           <MenuTrigger disableButtonEnhancement>
@@ -1593,20 +1822,32 @@ export function App() {
         {/* Elapsed time only once there is something to time. */}
         {held && <Text className={s.pausedBadge}>{heldLabel}</Text>}
         {state === 'starting' && <Text className={s.pausedBadge}>Starting…</Text>}
+        {/* Finalising: flush, write, remux. Seconds on a long take, and the
+            button alone (disabled, no label) gave no reason for the wait. */}
+        {state === 'saving' && <Text className={s.pausedBadge}>Saving…</Text>}
         {busy && state !== 'countdown' && state !== 'starting' && (
           <Text className={`${s.timer} ${held ? s.timerPaused : ''}`}>{formatTime(elapsed)}</Text>
         )}
 
         {/* Primary action, in the hang-up position. */}
         {state === 'idle' || state === 'saving' ? (
-          <Tooltip content="Start recording (Ctrl+Shift+F9)" relationship="label" withArrow>
+          <Tooltip
+            content={
+              state === 'saving'
+                ? 'Saving the recording…'
+                : 'Start recording (Ctrl+Shift+F9)'
+            }
+            relationship="label"
+            withArrow
+          >
             <button
               className={`${s.primaryBtn} ${s.primaryRecord}`}
               onClick={startWithCountdown}
               disabled={state === 'saving' || !settings.recording.screenSourceId}
-              aria-label="Start recording"
+              aria-label={state === 'saving' ? 'Saving the recording' : 'Start recording'}
+              aria-busy={state === 'saving'}
             >
-              <RecordFilled fontSize={22} />
+              {state === 'saving' ? <Spinner size="tiny" /> : <RecordFilled fontSize={22} />}
             </button>
           </Tooltip>
         ) : (

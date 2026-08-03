@@ -65,11 +65,6 @@ export function ffmpegPath(): string {
   return resolvedFfmpeg;
 }
 
-/** True when ffmpeg came from the app bundle rather than the user's PATH. */
-export function ffmpegIsBundled(): boolean {
-  return ffmpegPath() !== 'ffmpeg';
-}
-
 function runFfmpeg(args: string[], timeoutMs: number): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve) => {
     const proc = spawn(ffmpegPath(), args, { windowsHide: true });
@@ -118,23 +113,41 @@ export async function remuxToMp4(input: string): Promise<string> {
   // Never clobber a file that is already the target.
   if (path.resolve(output) === path.resolve(input)) return input;
 
-  const { code } = await runFfmpeg(
-    [
-      '-y',
-      '-fflags', '+genpts',
-      '-i', input,
-      // Stream copy: the source is already H.264 and re-encoding cannot
-      // recover detail the capture encoder discarded — it only costs time and
-      // throws away more. Quality has to be won at capture, not here.
-      '-c:v', 'copy',
-      '-c:a', 'aac',
-      '-b:a', '192k',
-      '-movflags', '+faststart',
-      output,
-    ],
-    // Generous: long tutorials still finish, but never hang forever.
-    30 * 60 * 1000,
-  );
+  // Video is always a stream copy: the source is already H.264 and
+  // re-encoding cannot recover detail the capture encoder discarded — it only
+  // costs time and throws away more. Quality has to be won at capture.
+  //
+  // Audio is tried as AAC first, then copied.
+  //
+  // MediaRecorder writes WebM with OPUS audio, and re-encoding that to AAC
+  // needs an Opus DECODER. The bundled ffmpeg is built `--disable-everything`
+  // and shipped without one, so this failed with "no decoder found for: opus",
+  // the whole remux was abandoned, and every browser-engine recording stayed a
+  // .webm. The build now enables the decoder, but an already-installed copy
+  // will not have it — so fall back to copying the Opus stream into the MP4
+  // rather than losing the container conversion over the audio codec.
+  const attempts: string[][] = [
+    ['-c:a', 'aac', '-b:a', '192k'],
+    ['-c:a', 'copy'],
+  ];
+
+  let code = 1;
+  for (const audioArgs of attempts) {
+    ({ code } = await runFfmpeg(
+      [
+        '-y',
+        '-fflags', '+genpts',
+        '-i', input,
+        '-c:v', 'copy',
+        ...audioArgs,
+        '-movflags', '+faststart',
+        output,
+      ],
+      // Generous: long tutorials still finish, but never hang forever.
+      30 * 60 * 1000,
+    ));
+    if (code === 0 && fs.existsSync(output)) break;
+  }
 
   if (code !== 0 || !fs.existsSync(output)) {
     // Clean up a partial file so the user isn't left with a broken MP4.

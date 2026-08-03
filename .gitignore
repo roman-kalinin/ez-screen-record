@@ -16,3 +16,7 @@ resources/ffmpeg/*
 
 # Claude Code agent worktrees (local scratch, not project content).
 .claude/worktrees/
+
+# Native audio-helper build artifacts
+native/audio-helper/*.exe
+native/audio-helper/*.obj

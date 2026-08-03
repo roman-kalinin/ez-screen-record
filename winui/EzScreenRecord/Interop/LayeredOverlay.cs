@@ -33,7 +33,20 @@ public sealed class LayeredOverlay : IDisposable
     private readonly List<Stroke> _strokes = [];
     private Stroke? _current;
 
+    /// <summary>
+    /// Guards <see cref="_strokes"/>, which two threads touch: the overlay's
+    /// own message pump iterates it to repaint, while Undo and Clear arrive
+    /// from the UI thread (the palette buttons and the hotkeys).
+    ///
+    /// Without this, clearing mid-stroke throws "Collection was modified"
+    /// inside the pump's foreach. Nothing catches on that thread, so the
+    /// exception takes the whole process down -- during a recording, which
+    /// loses the take.
+    /// </summary>
+    private readonly Lock _strokesLock = new();
+
     private IntPtr _hwnd;
+    private string? _className;
     private bool _interactive;
     private bool _disposed;
 
@@ -68,15 +81,35 @@ public sealed class LayeredOverlay : IDisposable
         _thread = new Thread(() =>
         {
             _threadId = GetCurrentThreadId();
-            CreateWindow();
-            Redraw();
-            _ready.Set();
+            try
+            {
+                CreateWindow();
+                Redraw();
+            }
+            finally
+            {
+                // Must run even if window creation threw, or every caller
+                // blocks on _ready for the full 5s timeout and then proceeds
+                // against a null HWND as though everything were fine.
+                _ready.Set();
+            }
 
             // Classic pump. Ends when PostQuitMessage runs on Dispose.
             while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
             {
-                TranslateMessage(ref msg);
-                DispatchMessage(ref msg);
+                // An escaping exception here is fatal to the process, and this
+                // thread has no synchronisation context to marshal it back to
+                // anything. Losing an annotation frame is survivable; losing
+                // the recording that is running at the time is not.
+                try
+                {
+                    TranslateMessage(ref msg);
+                    DispatchMessage(ref msg);
+                }
+                catch
+                {
+                    // Drop the message and keep pumping.
+                }
             }
         })
         {
@@ -97,6 +130,14 @@ public sealed class LayeredOverlay : IDisposable
 
     private void CreateWindow()
     {
+        // A unique class name per overlay, because the previous one may still be
+        // unregistering when a new overlay is created and RegisterClassEx would
+        // fail on the collision. The name is kept so Dispose can unregister it:
+        // minting a fresh atom on every F8 and never releasing one exhausts the
+        // process's 16,384-atom table, after which CreateWindowEx fails, the
+        // handle stays null, and F8 does nothing at all -- silently.
+        _className = ClassName + Guid.NewGuid().ToString("N");
+
         var wc = new WNDCLASSEX
         {
             cbSize = Marshal.SizeOf<WNDCLASSEX>(),
@@ -104,7 +145,7 @@ public sealed class LayeredOverlay : IDisposable
             lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_wndProc),
             hInstance = GetModuleHandle(null),
             hCursor = LoadCursor(IntPtr.Zero, IDC_CROSS),
-            lpszClassName = ClassName + Guid.NewGuid().ToString("N"),
+            lpszClassName = _className,
         };
 
         RegisterClassEx(ref wc);
@@ -180,11 +221,28 @@ public sealed class LayeredOverlay : IDisposable
     /// partial-invalidate path; at annotation stroke rates that is fine and it
     /// keeps the alpha exactly right.
     /// </summary>
+    /// <summary>
+    /// The paint surface, kept between redraws.
+    ///
+    /// Redraw runs on every WM_MOUSEMOVE -- 100+ times a second on a high
+    /// polling-rate mouse. Allocating it each time meant 33 MB per pass on a 4K
+    /// desktop and double that across two monitors, straight onto the large
+    /// object heap: strokes began smoothly and then lagged further behind the
+    /// cursor the longer the overlay stayed open.
+    /// </summary>
+    private Bitmap? _surface;
+
     public void Redraw()
     {
         if (_hwnd == IntPtr.Zero || _width <= 0 || _height <= 0) return;
 
-        using var bitmap = new Bitmap(_width, _height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        if (_surface is null || _surface.Width != _width || _surface.Height != _height)
+        {
+            _surface?.Dispose();
+            _surface = new Bitmap(_width, _height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        }
+
+        var bitmap = _surface;
         using (var g = Graphics.FromImage(bitmap))
         {
             // Alpha 1, not 0.
@@ -196,12 +254,23 @@ public sealed class LayeredOverlay : IDisposable
             // the window underneath, because there was nothing solid to hit.
             //
             // Alpha 1/255 is invisible to the eye but present to the hit test.
+            //
+            // SourceCopy because the surface is reused between redraws: the
+            // default SourceOver would blend this clear over the previous
+            // frame's strokes instead of replacing them, so erased and undone
+            // strokes would stay on screen forever.
+            g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
             g.Clear(_interactive ? Color.FromArgb(1, 0, 0, 0) : Color.Transparent);
+            g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceOver;
+
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
 
-            foreach (var stroke in _strokes) DrawStroke(g, stroke);
-            if (_current is not null) DrawStroke(g, _current);
+            lock (_strokesLock)
+            {
+                foreach (var stroke in _strokes) DrawStroke(g, stroke);
+                if (_current is not null) DrawStroke(g, _current);
+            }
         }
 
         PushBitmap(bitmap);
@@ -463,9 +532,12 @@ public sealed class LayeredOverlay : IDisposable
 
     private void OnPointerUp()
     {
-        if (_current is null) return;
-        _strokes.Add(_current);
-        _current = null;
+        lock (_strokesLock)
+        {
+            if (_current is null) return;
+            _strokes.Add(_current);
+            _current = null;
+        }
         Redraw();
     }
 
@@ -506,27 +578,37 @@ public sealed class LayeredOverlay : IDisposable
     private void EraseAt(Windows.Foundation.Point p)
     {
         const double radius = 18;
-        var removed = _strokes.RemoveAll(s => s.Points.Any(q =>
+        int removed;
+        lock (_strokesLock)
         {
-            var dx = q.X - p.X;
-            var dy = q.Y - p.Y;
-            return dx * dx + dy * dy <= radius * radius;
-        }));
+            removed = _strokes.RemoveAll(s => s.Points.Any(q =>
+            {
+                var dx = q.X - p.X;
+                var dy = q.Y - p.Y;
+                return dx * dx + dy * dy <= radius * radius;
+            }));
+        }
         if (removed > 0) Redraw();
     }
 
     public void Undo()
     {
-        if (_strokes.Count == 0) return;
-        _strokes.RemoveAt(_strokes.Count - 1);
+        lock (_strokesLock)
+        {
+            if (_strokes.Count == 0) return;
+            _strokes.RemoveAt(_strokes.Count - 1);
+        }
         RequestRedraw();
     }
 
     public void ClearAll()
     {
-        if (_strokes.Count == 0 && _current is null) return;
-        _strokes.Clear();
-        _current = null;
+        lock (_strokesLock)
+        {
+            if (_strokes.Count == 0 && _current is null) return;
+            _strokes.Clear();
+            _current = null;
+        }
         RequestRedraw();
     }
 
@@ -600,12 +682,39 @@ public sealed class LayeredOverlay : IDisposable
         // Tear the window down ON ITS OWN THREAD. DestroyWindow called from
         // another thread is a no-op, which is how a "closed" overlay stayed on
         // screen as an opaque sheet after a recording.
-        if (_hwnd != IntPtr.Zero) PostMessage(_hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
-        if (_threadId != 0) PostThreadMessage(_threadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
+        //
+        // WM_CLOSE alone, deliberately: GetMessage hands back WM_QUIT ahead of
+        // anything posted to the window, so also posting WM_QUIT here could end
+        // the pump before WM_CLOSE was ever dispatched. DestroyWindow then
+        // never ran and the overlay stayed on screen for good -- with its
+        // owning thread gone, nothing could remove it, and the desktop was
+        // covered by a topmost sheet until the app was killed.
+        //
+        // WM_DESTROY calls PostQuitMessage, so the pump still ends; it just
+        // ends after the window is actually destroyed.
+        var hwnd = _hwnd;
+        if (hwnd != IntPtr.Zero) PostMessage(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
 
-        _thread?.Join(TimeSpan.FromSeconds(2));
+        // Fall back to the blunt instrument only if the polite route stalls,
+        // so a wedged pump cannot hang the app for good either.
+        if (_thread is { } thread && !thread.Join(TimeSpan.FromSeconds(2)))
+        {
+            if (_threadId != 0) PostThreadMessage(_threadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
+            thread.Join(TimeSpan.FromSeconds(1));
+        }
         _thread = null;
         _hwnd = IntPtr.Zero;
+        _surface?.Dispose();
+        _surface = null;
+
+        // Only valid once the window is destroyed, which the Join above waited
+        // for; unregistering while instances remain fails and leaks the atom.
+        if (_className is not null)
+        {
+            UnregisterClass(_className, GetModuleHandle(null));
+            _className = null;
+        }
+
         _ready.Dispose();
     }
 
@@ -700,6 +809,9 @@ public sealed class LayeredOverlay : IDisposable
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "RegisterClassExW")]
     private static extern ushort RegisterClassEx(ref WNDCLASSEX wc);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "UnregisterClassW")]
+    private static extern bool UnregisterClass(string className, IntPtr instance);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "CreateWindowExW")]
     private static extern IntPtr CreateWindowEx(

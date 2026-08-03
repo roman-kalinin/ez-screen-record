@@ -686,6 +686,9 @@ public sealed class Recorder
     /// </summary>
     public string? LastJoinError { get; private set; }
 
+    /// <summary>Why the last system-audio mux failed, if it did.</summary>
+    public static string? LastMuxError { get; private set; }
+
     /// <summary>
     /// Mix a captured desktop-audio WAV into a finished recording.
     ///
@@ -697,9 +700,6 @@ public sealed class Recorder
     /// Returns the original path on any failure -- a recording that lacks
     /// desktop audio is far better than no recording at all.
     /// </summary>
-    /// <summary>Why the last system-audio mux failed, if it did.</summary>
-    public static string? LastMuxError { get; private set; }
-
     public static async Task<string> MuxSystemAudioAsync(string videoPath, string wavPath)
     {
         LastMuxError = null;

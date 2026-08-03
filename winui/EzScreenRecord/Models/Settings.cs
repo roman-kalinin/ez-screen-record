@@ -94,13 +94,10 @@ public sealed class RecordingSettings
     /// <summary>
     /// Capture desktop audio as well as the microphone.
     ///
-    /// NOT IMPLEMENTED, and deliberately defaulted to false rather than true so
-    /// it does not read as a working feature. Electron gets this from Chromium's
-    /// `chromeMediaSource: 'desktop'` loopback; ffmpeg's dshow backend has no
-    /// equivalent -- it only enumerates real microphones, and this machine has
-    /// no Stereo Mix device -- so it needs a WASAPI loopback capture feeding
-    /// ffmpeg over a pipe. Until that exists the recorder ignores this, and the
-    /// settings UI says so.
+    /// ffmpeg's dshow backend enumerates real microphones only and has no WASAPI
+    /// loopback, so this is captured out-of-band: SystemAudioCapture records the
+    /// loopback to a temp WAV during the take, which is muxed into the output
+    /// afterward (see MainWindow.Recording.cs and Recorder.MuxSystemAudioAsync).
     /// </summary>
     public bool SystemAudioEnabled { get; set; }
     public int Fps { get; set; } = 30;
@@ -149,18 +146,61 @@ public sealed class AppSettings
 
     public static AppSettings Load()
     {
+        if (!File.Exists(SettingsPath)) return new AppSettings();
+
+        string json;
+        try { json = File.ReadAllText(SettingsPath); }
+        catch { return new AppSettings(); }
+
         try
         {
-            if (!File.Exists(SettingsPath)) return new AppSettings();
-            var json = File.ReadAllText(SettingsPath);
             return JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? new AppSettings();
+        }
+        catch (JsonException)
+        {
+            // One unparseable value used to discard the entire file: camera
+            // position, mic choice, source, everything, silently back to
+            // defaults. This file is shared with the Electron build, so a
+            // single enum member one version knows and the other does not was
+            // enough to trigger it.
+            //
+            // Retry section by section instead, so a bad value costs only the
+            // section it is in.
+            return LoadPerSection(json);
         }
         catch
         {
-            // A corrupt or unreadable settings file must never stop the app from
-            // starting -- defaults are always a usable state.
             return new AppSettings();
         }
+    }
+
+    /// <summary>
+    /// Salvage what parses when the file as a whole does not. Each section is
+    /// deserialised on its own and falls back to its defaults independently.
+    /// </summary>
+    private static AppSettings LoadPerSection(string json)
+    {
+        var result = new AppSettings();
+
+        JsonElement root;
+        try { root = JsonDocument.Parse(json).RootElement; }
+        catch { return result; }
+
+        if (root.ValueKind != JsonValueKind.Object) return result;
+
+        static T? Section<T>(JsonElement root, string name) where T : class
+        {
+            if (!root.TryGetProperty(name, out var element)) return null;
+            try { return element.Deserialize<T>(JsonOptions); }
+            catch { return null; }
+        }
+
+        result.Recording = Section<RecordingSettings>(root, "recording") ?? result.Recording;
+        result.Camera = Section<CameraOverlay>(root, "camera") ?? result.Camera;
+        result.Draw = Section<DrawSettings>(root, "draw") ?? result.Draw;
+        result.Images = Section<List<ImageOverlay>>(root, "images") ?? result.Images;
+
+        return result;
     }
 
     public void Save()

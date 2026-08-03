@@ -47,7 +47,13 @@ const api = {
     close: (isRecording = false) => ipcRenderer.invoke('win:close', isRecording),
     setAlwaysOnTop: (flag: boolean) => ipcRenderer.invoke('win:setAlwaysOnTop', flag),
     /** Collapse the window into the compact recording toolbar, or restore it. */
-    setToolbarMode: (on: boolean) => ipcRenderer.invoke('win:setToolbarMode', on),
+    /**
+     * @param keepAlive Park the control window off-screen instead of hiding
+     *   it. Required by the browser engine, whose canvas compositor stops
+     *   rendering the moment the window is hidden.
+     */
+    setToolbarMode: (on: boolean, keepAlive = false) =>
+      ipcRenderer.invoke('win:setToolbarMode', on, keepAlive),
     /** Hide the recording toolbar from screen capture. */
     setHideFromCapture: (hide: boolean) =>
       ipcRenderer.invoke('win:setHideFromCapture', hide),
@@ -74,6 +80,7 @@ const api = {
       height?: number;
       quality: 'high' | 'balanced' | 'compact';
       micDeviceName?: string | null;
+      systemAudioEnabled?: boolean;
       camera?: {
         deviceName: string;
         rect: { x: number; y: number; w: number; h: number };
@@ -81,8 +88,16 @@ const api = {
         mirrored: boolean;
       } | null;
       outputDir: string | null;
+      /** Electron display id of the chosen screen, so ddagrab captures it. */
+      displayId?: string;
     }): Promise<SaveResult> => ipcRenderer.invoke('native:start', opts),
     stop: (): Promise<SaveResult> => ipcRenderer.invoke('native:stop'),
+    /** Swap monitor/microphone mid-take; splits the take at the change. */
+    reconfigure: (patch: {
+      micDeviceName?: string | null;
+      displayId?: string;
+    }): Promise<{ ok: boolean; error?: string; paused?: boolean }> =>
+      ipcRenderer.invoke('native:reconfigure', patch),
     /** Hold the ffmpeg take. Resolves with the state that actually resulted. */
     pause: (): Promise<{ ok: boolean; paused: boolean; error?: string }> =>
       ipcRenderer.invoke('native:pause'),

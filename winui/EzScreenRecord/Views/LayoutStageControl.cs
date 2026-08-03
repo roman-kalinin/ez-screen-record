@@ -459,15 +459,26 @@ public sealed class LayoutStageControl : UserControl
         var bitmap = frame?.VideoMediaFrame?.SoftwareBitmap;
         if (bitmap is null) return;
 
-        // SoftwareBitmapSource requires BGRA8 premultiplied; the camera may
-        // hand back something else.
-        var converted = bitmap.BitmapPixelFormat == Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8
-            && bitmap.BitmapAlphaMode == Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied
-                ? bitmap
-                : Windows.Graphics.Imaging.SoftwareBitmap.Convert(
-                    bitmap,
-                    Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
-                    Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied);
+        // SoftwareBitmapSource requires BGRA8 premultiplied, and the handoff to
+        // the UI thread is asynchronous -- so this must be a bitmap we own.
+        //
+        // Reusing the frame's own bitmap when the format already matched meant
+        // handing SetBitmapAsync a buffer the `using` above disposes the moment
+        // this method returns. On a webcam that natively delivers BGRA8 that hit
+        // every frame, so the preview stayed blank until something forced a
+        // restart of the feed.
+        Windows.Graphics.Imaging.SoftwareBitmap converted;
+        try
+        {
+            converted = Windows.Graphics.Imaging.SoftwareBitmap.Convert(
+                bitmap,
+                Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
+                Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied);
+        }
+        catch
+        {
+            return;
+        }
 
         _frameBusyUntil = now + FrameTimeoutMs;
         var queued = DispatcherQueue.TryEnqueue(async () =>
@@ -483,11 +494,18 @@ public sealed class LayoutStageControl : UserControl
             }
             finally
             {
+                // Convert always allocates; without this every frame leaks a
+                // native buffer the GC has no pressure signal to reclaim.
+                converted.Dispose();
                 _frameBusyUntil = 0;
             }
         });
 
-        if (!queued) _frameBusyUntil = 0;
+        if (!queued)
+        {
+            converted.Dispose();
+            _frameBusyUntil = 0;
+        }
     }
 
     private void StopCamera()

@@ -95,8 +95,6 @@ public sealed class PillControl : UserControl
         UpdateVisual();
     }
 
-    public bool IsEnabled_ => _enabled;
-
     public void SetEnabled(bool enabled, bool notify = false)
     {
         _enabled = enabled;

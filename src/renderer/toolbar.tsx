@@ -6,6 +6,7 @@ import {
   tokens,
   Text,
   Tooltip,
+  Spinner,
 } from '@fluentui/react-components';
 import {
   // FILLED transport icons, deliberately.
@@ -295,6 +296,11 @@ function Toolbar() {
   const heldLabel =
     st.state === 'pausing' ? 'Pausing…' : st.state === 'resuming' ? 'Resuming…' : 'Paused';
 
+  // Finalising the file: MediaRecorder flushes, the blob is written, then
+  // ffmpeg remuxes. On a long take that is seconds of real work, and a bar
+  // still showing a running clock and a live stop button read as a hang.
+  const saving = st.state === 'saving';
+
   return (
     <div className={s.root}>
       <div
@@ -374,11 +380,14 @@ function Toolbar() {
 
         {st.state === 'starting' ? (
           <Text className={`${s.timer} ${s.timerPaused}`}>Starting…</Text>
+        ) : saving ? (
+          <Text className={`${s.timer} ${s.timerPaused}`}>Saving…</Text>
         ) : (
           <Text className={`${s.timer} ${paused ? s.timerPaused : ''}`}>{formatTime(seconds)}</Text>
         )}
 
-        {st.canPause !== false && (
+        {/* Pause is meaningless once the take has ended. */}
+        {st.canPause !== false && !saving && (
           <Tooltip
             content={transitioning ? heldLabel : paused ? 'Resume' : 'Pause'}
             relationship="label"
@@ -399,7 +408,7 @@ function Toolbar() {
         )}
 
         <Tooltip
-          content="Stop recording (Ctrl+Shift+F9)"
+          content={saving ? 'Saving the recording…' : 'Stop recording (Ctrl+Shift+F9)'}
           relationship="label"
           withArrow
           onVisibleChange={(_e, d) => holdInteractive(d.visible)}
@@ -407,9 +416,13 @@ function Toolbar() {
           <button
             className={s.stopBtn}
             onClick={() => send('toolbar:stop')}
-            aria-label="Stop recording"
+            // A second stop while the first is still finalising would run the
+            // whole teardown twice.
+            disabled={saving}
+            aria-label={saving ? 'Saving the recording' : 'Stop recording'}
+            aria-busy={saving}
           >
-            <StopFilled fontSize={22} />
+            {saving ? <Spinner size="tiny" /> : <StopFilled fontSize={22} />}
           </button>
         </Tooltip>
       </div>

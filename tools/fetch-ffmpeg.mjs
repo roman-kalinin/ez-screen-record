@@ -160,7 +160,7 @@ async function main() {
   extract(zip, TMP);
 
   const exe = await findExe(TMP);
-  if (!exe) throw new Error('ffmpeg.exe not found in the archive');
+  if (!exe) throw new Error(`${EXE_NAME} not found in the archive`);
 
   const missing = verify(exe);
   if (missing.length) {
@@ -168,7 +168,8 @@ async function main() {
       `This build is missing: ${missing.join(', ')}. It would fail at record time — not installing it.`,
     );
   }
-  console.log('Verified: ddagrab, libplacebo, h264_nvenc all present.');
+  const verified = [...REQUIRED_FILTERS, ...REQUIRED_ENCODERS, ...REQUIRED_DEVICES];
+  console.log(`Verified: ${verified.join(', ')} all present.`);
 
   const dest = path.join(DEST, EXE_NAME);
   await copyFile(exe, dest);

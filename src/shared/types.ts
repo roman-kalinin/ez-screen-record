@@ -91,12 +91,35 @@ export type ResolutionPreset = 'source' | '2160' | '1440' | '1080' | '720';
  *
  * `overlay` composites the webcam and images live in the browser, but is bound
  * by Chromium's encoder: about 12 Mbps at 1440p, 4:2:0 only, and no way to
- * raise it. `crisp` hands capture to ffmpeg (Desktop Duplication + x264 CRF in
- * 4:4:4), which measured 45.0 dB PSNR against 36.4 dB for the same source —
- * the difference between legible and mushy screen text. The cost is that
- * ffmpeg grabs the raw desktop, so it cannot burn in overlays.
+ * raise it. `crisp` hands capture to ffmpeg (Desktop Duplication + NVENC or
+ * x264 in 4:4:4), which measured 46.4 dB PSNR against 36.3 dB for the same
+ * source — the difference between legible and mushy screen text. The cost is
+ * that ffmpeg grabs the raw desktop, so it cannot burn in overlays.
  */
 export type CaptureEngine = 'overlay' | 'crisp';
+
+export const CAPTURE_ENGINES: Array<{
+  value: CaptureEngine;
+  label: string;
+  detail: string;
+}> = [
+  {
+    value: 'crisp',
+    label: 'Best quality — whole screen only',
+    detail:
+      'ffmpeg captures the desktop in 4:4:4 (46.4 dB PSNR against 36.3 for the browser). ' +
+      'Cannot record a single window, and changing source or pausing costs about two seconds ' +
+      'while it restarts.',
+  },
+  {
+    value: 'overlay',
+    label: 'Flexible — windows, seamless switching',
+    detail:
+      'Chromium captures, the way Google Meet does. Records a single window, and switching ' +
+      'source mid-take is instant with no break in the video. The encoder caps around ' +
+      '12 Mbps at 1440p in 4:2:0, so fine text is softer.',
+  },
+];
 
 export type QualityPreset = 'high' | 'balanced' | 'compact';
 
@@ -123,10 +146,36 @@ export interface RecordingSettings {
   hideToolbarFromCapture: boolean;
 }
 
-export const QUALITY_PRESETS: Array<{ value: QualityPreset; label: string }> = [
-  { value: 'high', label: 'Best — visually lossless' },
-  { value: 'balanced', label: 'Balanced' },
-  { value: 'compact', label: 'Smallest file' },
+/**
+ * How much data per pixel — a different axis from RESOLUTIONS, which sets how
+ * many pixels there are.
+ *
+ * These map to CRF and chroma subsampling: 16/4:4:4, 20/4:4:4, 23/4:2:0. A
+ * 1440p compact file and a 720p best file can be the same size while failing
+ * in opposite ways — one is big but mushy, the other small but sharp. Chroma
+ * is the part that matters most for screen text, which is why only the
+ * smallest preset drops to 4:2:0.
+ */
+export const QUALITY_PRESETS: Array<{
+  value: QualityPreset;
+  label: string;
+  detail: string;
+}> = [
+  {
+    value: 'high',
+    label: 'Best — visually lossless',
+    detail: 'Full colour detail. Text stays razor sharp. Largest files.',
+  },
+  {
+    value: 'balanced',
+    label: 'Balanced',
+    detail: 'Full colour detail, roughly half the size. Text still sharp.',
+  },
+  {
+    value: 'compact',
+    label: 'Smallest file',
+    detail: 'Reduced colour detail — fine for video, softens small text.',
+  },
 ];
 
 export const RESOLUTIONS: Array<{ value: ResolutionPreset; label: string }> = [
@@ -233,9 +282,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
     fps: 30,
     resolution: 'source',
     countdownSeconds: 3,
-    // Default to the browser pipeline: the webcam overlay is the app's whole
-    // point, and 'crisp' cannot composite it.
-    engine: 'overlay',
+    // Default to ffmpeg. The webcam is shown as an on-screen bubble that the
+    // desktop capture picks up, so 'crisp' not compositing it internally costs
+    // nothing -- and it is the only engine that keeps screen text legible.
+    // Switch to 'overlay' to record a single window.
+    engine: 'crisp',
     quality: 'high',
     outputDir: null,
     hideToolbarFromCapture: true,

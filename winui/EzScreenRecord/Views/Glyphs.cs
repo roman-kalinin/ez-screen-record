@@ -21,12 +21,8 @@ internal static class Glyphs
     public const string Ellipse = "\uEA3A";
     public const string Eraser = "\uE75C";
 
-    public const string Undo = "\uE7A7";
     public const string Delete = "\uE74D";
-    public const string Refresh = "\uE72C";
-    public const string Camera = "\uE714";
     public const string Mirror = "\uE13C";
-    public const string Minimized = "\uE738";
 
     public const string Accept = "\uE73E";
     public const string Cancel = "\uE711";

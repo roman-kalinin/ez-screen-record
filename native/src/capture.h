@@ -26,9 +26,8 @@ using Microsoft::WRL::ComPtr;
  */
 struct Frame {
   ComPtr<ID3D11Texture2D> texture;
-  // Slice within a texture array. Media Foundation hands back the SAME texture
-  // pointer every sample with a different index, so ignoring this renders
-  // stale frames intermittently.
+  // Slice within a texture array; always 0 for the WGC source, but kept so a
+  // future array-backed source can index into a shared texture.
   uint32_t subresource = 0;
   int64_t timestampQpc = 0;
   uint32_t width = 0;

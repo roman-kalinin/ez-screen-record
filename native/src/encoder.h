@@ -7,7 +7,6 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <vector>
 
 namespace ez {
 
@@ -53,7 +52,7 @@ class NvencEncoder {
 
   void SetPacketCallback(PacketCallback cb) { onPacket_ = std::move(cb); }
 
-  /** True when the driver exposes NVENC and it advertises 4:4:4. */
+  /** True when the NVENC runtime DLL loads (i.e. an NVIDIA driver is present). */
   static bool IsAvailable();
 
  private:

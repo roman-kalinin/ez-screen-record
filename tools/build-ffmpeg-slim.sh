@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build a minimal LGPL ffmpeg.exe for Ez Screen Record.
+# Build a minimal GPL ffmpeg.exe for Ez Screen Record.
 #
 # The stock BtbN "full" build is 138.5 MB and carries AV1 encoders, x265,
 # dav1d, DVD/Bluray, ZeroMQ, VMAF, SDL2, OpenAL and dozens of other libraries
@@ -299,6 +299,13 @@ make distclean >/dev/null 2>&1 || true
   --enable-decoder=h264 \
   --enable-decoder=hevc \
   --enable-decoder=aac \
+  `# Chromium's MediaRecorder has no MP4/AAC muxer on Windows, so browser-engine` \
+  `# takes come out as H.264-in-WebM with OPUS audio. Remuxing those to MP4 has` \
+  `# to decode the Opus to re-encode it as AAC -- without this the remux fails` \
+  `# with "no decoder found for: opus" and the recording stays a .webm.` \
+  --enable-decoder=opus \
+  --enable-demuxer=ogg \
+  --enable-parser=opus \
   --enable-decoder=pcm_s16le \
   --enable-decoder=mjpeg \
   --enable-decoder=png \

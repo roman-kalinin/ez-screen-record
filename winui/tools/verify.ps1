@@ -91,7 +91,63 @@ function WindowSize($needle) {
     $p = $w -split '\|'
     [pscustomobject]@{ X = [int]$p[1]; Y = [int]$p[2]; W = [int]$p[3]; H = [int]$p[4] }
 }
-function Key($k) { [System.Windows.Forms.SendKeys]::SendWait($k); Start-Sleep -Milliseconds 600 }
+# keybd_event, not SendKeys.
+#
+# The app's hotkeys are RegisterHotKey globals, which are served from the real
+# keyboard input queue. SendKeys posts WM_KEYDOWN to the focused window, which
+# those never see -- F8 silently did nothing here while working perfectly by
+# hand, and that read as an app bug for a whole debugging round.
+Add-Type @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+// Not "Keys": System.Windows.Forms.Keys is already in scope and [Keys]::Tap
+// would bind to that enum instead.
+public class EzKeys {
+    [DllImport("user32.dll")]
+    public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int c);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    public delegate bool EnumProc(IntPtr h, IntPtr p);
+
+    public static void Tap(byte vk) {
+        keybd_event(vk, 0, 0, UIntPtr.Zero);
+        System.Threading.Thread.Sleep(60);
+        keybd_event(vk, 0, 2 /* KEYEVENTF_KEYUP */, UIntPtr.Zero);
+    }
+
+    /// Raise the app's main window. Synthetic input from a non-foreground
+    /// process is filtered by UIPI, so without this every hotkey is silently
+    /// dropped -- which reads exactly like a broken app.
+    public static void Focus(uint pid) {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((h, p) => {
+            uint owner; GetWindowThreadProcessId(h, out owner);
+            if (owner != pid || !IsWindowVisible(h)) return true;
+            var sb = new StringBuilder(300); GetWindowText(h, sb, 300);
+            if (sb.ToString() == "Ez Screen Record") { found = h; return false; }
+            return true;
+        }, IntPtr.Zero);
+        if (found != IntPtr.Zero) SetForegroundWindow(found);
+    }
+}
+'@
+
+function Key($k) {
+    $vk = switch ($k) { '{F8}' { 0x77 } '{F9}' { 0x78 } '{F10}' { 0x79 } }
+    if (-not $vk) { throw "verify.ps1: no virtual-key mapping for '$k'" }
+
+    # Re-assert foreground before every key: the app hides its main window
+    # during a take and shows the toolbar instead, so focus moves around.
+    [EzKeys]::Focus([uint32]$script:proc.Id)
+    Start-Sleep -Milliseconds 300
+    [EzKeys]::Tap([byte]$vk)
+    Start-Sleep -Milliseconds 600
+}
 # `ffmpeg -i` with no output always exits 1 and writes the stream table to
 # stderr, which is exactly what we want to read. Suppress the failure so
 # $ErrorActionPreference='Stop' does not abort the run on a successful probe.

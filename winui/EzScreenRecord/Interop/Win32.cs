@@ -66,8 +66,6 @@ internal static partial class Win32
     /// <summary>DWMWA_CLOAKED -- read back whether a window is cloaked.</summary>
     internal const int DWMWA_CLOAKED = 14;
 
-    // --- Display affinity ---------------------------------------------------
-
     // --- Layered window attributes ------------------------------------------
 
     /// <summary>Treat the given colour as fully transparent.</summary>

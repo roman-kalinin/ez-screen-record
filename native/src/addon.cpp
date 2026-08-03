@@ -181,8 +181,6 @@ Napi::Value CaptureTest(const Napi::CallbackInfo& info) {
   const auto epoch = std::chrono::steady_clock::now();
 
   for (uint32_t i = 0; i < totalFrames; ++i) {
-    // Absolute deadlines from a fixed epoch: adding deltas to "now" would let
-    // rounding error accumulate over a long take.
     const auto waitUntil =
         epoch + std::chrono::nanoseconds(static_cast<int64_t>(1e9 * (i + 1) / fps));
 

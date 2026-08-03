@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { hasFfmpeg, ffmpegPath } from './remux';
+import { SystemAudioHelper } from './system-audio';
 import {
   CAPTURE_IS_HW,
   CAPTURE_PIX_FMT,
@@ -100,20 +101,27 @@ export interface NativeRecordOptions {
   height?: number;
   quality: QualityPreset;
   micDeviceName?: string | null;
+  /**
+   * Capture desktop (system) audio via the WASAPI loopback helper and mux it
+   * into the finished file. Windows only; ffmpeg has no loopback input of its
+   * own. See system-audio.ts.
+   */
+  systemAudioEnabled?: boolean;
   camera?: NativeCameraOptions | null;
   /** Absolute paths to PNG/JPEG overlays, with their placement. */
   images?: Array<{ filePath: string; rect: NativeRect; opacity: number }>;
 }
 
-/** CRF and chroma per preset. Lower CRF = higher quality, bigger files. */
 /**
  * Backstop for "did ffmpeg start?", only reached when no frame is ever
- * reported. Measured: `Output #0` at ~99ms, but the first NON-ZERO frame count
- * at ~1620ms on a 1440p ddagrab path — so this has to sit comfortably above
- * that, or a healthy-but-slow start would be declared ready before it was.
+ * reported. Measured: `Output #0` at ~200ms, but the first NON-ZERO frame
+ * count at ~2180ms on a 1440p ddagrab path — so this has to sit comfortably
+ * above that, or a healthy-but-slow start would be declared ready before it
+ * was.
  */
 const START_TIMEOUT_MS = 4000;
 
+// CRF and chroma per quality preset. Lower CRF = higher quality, bigger files.
 const PRESETS: Record<QualityPreset, { crf: string; pixFmt: string; preset: string }> = {
   // Visually lossless for screen content.
   high: { crf: '16', pixFmt: 'yuv444p', preset: 'veryfast' },
@@ -208,6 +216,8 @@ export class NativeRecorder {
   private resumeOpts: NativeRecordOptions | null = null;
   private pausedAt = 0;
   private pausedTotal = 0;
+  /** Desktop-audio loopback capture, when systemAudioEnabled (Windows only). */
+  private systemAudio: SystemAudioHelper | null = null;
 
   get isRecording(): boolean {
     return this.proc !== null && !this.proc.killed;
@@ -241,6 +251,52 @@ export class NativeRecorder {
     return `${base}.part${++this.segmentSeq}${ext}`;
   }
 
+  /**
+   * Change inputs mid-take: a different monitor, a different microphone.
+   *
+   * ffmpeg's inputs are fixed when the process is spawned -- there is no way
+   * to hand it a new device on a running graph. So this reuses the pause
+   * machinery: finalise the current segment, respawn with the new options,
+   * and let stop() concatenate. The seam costs the ~2s ffmpeg needs to come
+   * up, which is why the caller shows a transitional state rather than
+   * pretending the swap is instant.
+   *
+   * The take is NOT paused around this: pausedTotal is untouched, so the
+   * elapsed clock keeps running across the swap the way a viewer expects.
+   *
+   * On failure the old segment is already closed and cannot be reopened, so
+   * the recorder is left paused rather than silently dead -- the caller can
+   * resume (retrying with the previous options) or stop and keep what exists.
+   */
+  async reconfigure(patch: Partial<NativeRecordOptions>): Promise<void> {
+    if (!this.proc || this.isPaused) throw new Error('No native recording is running.');
+    if (!this.resumeOpts) throw new Error('No native recording is running.');
+
+    const finished = this.currentSegment;
+    await this.stopProcess();
+    this.segments.push(finished);
+
+    const nextOpts = { ...this.resumeOpts, ...patch };
+    const next = this.nextSegmentPath();
+    try {
+      await this.spawnFfmpeg({ ...nextOpts, outputPath: next });
+    } catch (err) {
+      // Leave it held rather than half-dead; the finished segments are safe.
+      this.pausedAt = Date.now();
+      try {
+        if (fs.existsSync(next)) fs.unlinkSync(next);
+      } catch {
+        /* best effort */
+      }
+      throw err;
+    }
+
+    // Only once the respawn worked do the new options become the ones a
+    // later resume would use.
+    this.resumeOpts = nextOpts;
+    this.currentSegment = next;
+  }
+
   async pause(): Promise<void> {
     if (!this.proc || this.isPaused) throw new Error('No native recording is running.');
 
@@ -248,6 +304,10 @@ export class NativeRecorder {
     // process would leave an unplayable fragment with no moov atom.
     const finished = this.currentSegment || this.outputPath;
     await this.stopProcess();
+
+    // Drop the same span from the audio: stop appending without finalising so
+    // the single WAV stays exactly as long as the concatenated video.
+    this.systemAudio?.pause();
 
     this.segments.push(finished);
     this.pausedAt = Date.now();
@@ -271,6 +331,11 @@ export class NativeRecorder {
       }
       throw err;
     }
+
+    // Only resume audio once the video respawn actually worked, mirroring the
+    // clock accounting below — a failed resume must not append an audio span
+    // that has no matching video segment.
+    this.systemAudio?.resume();
 
     this.pausedTotal += Date.now() - this.pausedAt;
     this.pausedAt = 0;
@@ -364,18 +429,6 @@ export class NativeRecorder {
   }
 
   /**
-   * Can camera and image overlays be burned into the recording?
-   *
-   * When false the recorder still captures, but overlays have to be dropped —
-   * the caller should keep the on-screen camera bubble instead, which is
-   * captured as part of the desktop and needs no compositor.
-   */
-  static async canComposite(): Promise<boolean> {
-    if (!(await hasFfmpeg())) return false;
-    return hasFilter('libplacebo');
-  }
-
-  /**
    * Can a take be paused and still come back as ONE file?
    *
    * Pause splits the take into segments, and joining them needs the concat
@@ -401,10 +454,33 @@ export class NativeRecorder {
     this.startedAt = 0;
     this.pausedAt = 0;
     this.pausedTotal = 0;
+    this.systemAudio = null;
+
+    // Start desktop-audio capture BEFORE ffmpeg, so sound is already recording
+    // when the first video frame lands. Best-effort: a missing or failing
+    // helper must never stop a take from starting — it just means no system
+    // audio in the file.
+    if (opts.systemAudioEnabled) {
+      const helper = new SystemAudioHelper();
+      try {
+        await helper.start();
+        this.systemAudio = helper;
+      } catch (err) {
+        this.systemAudio = null;
+        console.warn('[native-recorder] system audio unavailable, continuing without it', err);
+      }
+    }
 
     // Record into part1, NOT into outputPath -- see nextSegmentPath.
     this.currentSegment = this.nextSegmentPath();
-    await this.spawnFfmpeg({ ...opts, outputPath: this.currentSegment });
+    try {
+      await this.spawnFfmpeg({ ...opts, outputPath: this.currentSegment });
+    } catch (err) {
+      // ffmpeg failed to come up — don't leave the audio helper capturing.
+      await this.systemAudio?.discard();
+      this.systemAudio = null;
+      throw err;
+    }
     // Stamped INSIDE spawnFfmpeg, at the moment the process was launched --
     // not here, after the readiness wait. Setting it afterwards discarded the
     // whole startup period, so the timer under-reported every take by however
@@ -800,6 +876,11 @@ export class NativeRecorder {
       if (this.currentSegment) this.segments.push(this.currentSegment);
     }
 
+    // Finalise the desktop-audio WAV before ffmpeg reads it — its header is only
+    // valid once the helper has flushed and exited.
+    const audioWav = this.systemAudio ? await this.systemAudio.stop() : null;
+    this.systemAudio = null;
+
     const parts = this.segments.filter((p) => {
       try {
         return fs.statSync(p).size > 0;
@@ -817,7 +898,21 @@ export class NativeRecorder {
       } else if (parts.length > 1) {
         await this.concatSegments(parts);
       }
+
+      // Mux desktop audio into the finished video, if any was captured. Done
+      // last so the video path above is unchanged whether or not audio exists —
+      // a failed mux still leaves a valid, audio-less recording in place.
+      if (audioWav && parts.length >= 1) {
+        await this.muxSystemAudio(audioWav);
+      }
     } finally {
+      if (audioWav) {
+        try {
+          fs.unlinkSync(audioWav);
+        } catch {
+          /* best effort */
+        }
+      }
       this.segments = [];
       this.currentSegment = '';
       this.segmentSeq = 0;
@@ -828,6 +923,65 @@ export class NativeRecorder {
     }
 
     return this.outputPath;
+  }
+
+  /**
+   * Mux a captured desktop-audio WAV into the finished video at this.outputPath.
+   *
+   * The video already has its own audio only if a mic was recorded, so we mix
+   * rather than replace: `amix` when a mic track is present, otherwise the WAV
+   * simply becomes the audio track. Video is stream-copied (`-c:v copy`) so this
+   * is a fast remux, not a re-encode.
+   *
+   * Best-effort: on any failure the original audio-less (or mic-only) file is
+   * left in place. A recording without desktop sound beats no recording.
+   */
+  private async muxSystemAudio(wavPath: string): Promise<void> {
+    const ext = path.extname(this.outputPath);
+    const videoOnly = `${this.outputPath.slice(0, -ext.length)}.beforemux${ext}`;
+    fs.renameSync(this.outputPath, videoOnly);
+
+    // Does the finished video already carry an audio track (a mic)?
+    const hasMic = Boolean(this.resumeOpts?.micDeviceName);
+
+    const args = ['-hide_banner', '-y', '-i', videoOnly, '-i', wavPath];
+    if (hasMic) {
+      args.push(
+        '-filter_complex',
+        '[0:a][1:a]amix=inputs=2:duration=longest:dropout_transition=0[a]',
+        '-map', '0:v:0', '-map', '[a]',
+      );
+    } else {
+      args.push('-map', '0:v:0', '-map', '1:a:0');
+    }
+    args.push('-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-shortest', this.outputPath);
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const proc = spawn(ffmpegPath(), args, { windowsHide: true });
+        let err = '';
+        proc.stderr?.on('data', (d: Buffer) => (err += String(d)));
+        proc.on('error', reject);
+        proc.on('close', (code) =>
+          code === 0 ? resolve() : reject(new Error(explainFailure(err, code))),
+        );
+      });
+      // Muxed file is in place; drop the video-only intermediate.
+      try {
+        fs.unlinkSync(videoOnly);
+      } catch {
+        /* best effort */
+      }
+    } catch (err) {
+      // Restore the un-muxed video so the take is never lost to an audio mux.
+      try {
+        if (!fs.existsSync(this.outputPath)) fs.renameSync(videoOnly, this.outputPath);
+        else fs.unlinkSync(videoOnly);
+      } catch {
+        /* best effort */
+      }
+      console.warn('[native-recorder] could not mux system audio; kept video without it', err);
+    }
   }
 
   /** Ask ffmpeg to finalise the current segment and wait for it to exit. */

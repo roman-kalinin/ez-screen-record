@@ -174,17 +174,57 @@ function CameraBubble() {
 
   // --- Drag & resize (in place) ----------------------------------------------
   /**
-   * The bubble node, so a drag can be painted straight to the DOM.
-   *
-   * This window lives ON the display being recorded, so work done here is work
-   * taken from the recorder. Re-rendering React and posting IPC on every
-   * pointer-move (at pointer rate, during a take) is exactly the contention
-   * that starved ffmpeg. The gesture paints locally and publishes once on
-   * release.
+   * The gesture renders through React and streams the live rect to the control
+   * window once per animation frame (see scheduleDragFrame), plus a final
+   * publish on release. The overlay window is excluded from screen capture, so
+   * that stream is the only thing that moves the camera in the recording.
    */
-  const bubbleRef = useRef<HTMLDivElement>(null);
-  const frameRef = useRef<HTMLDivElement>(null);
   const latestRef = useRef<Rect | null>(null);
+
+  /**
+   * Windows layered transparent windows only invalidate the rect that changed,
+   * not the one the bubble just vacated, so the old pixels linger as a ghost
+   * copy until the next full repaint (which happens on release). Forcing the
+   * full-window backdrop to repaint each frame clears the vacated region.
+   *
+   * We do it by writing a 1/255-alpha backdrop whose blue channel flips by one
+   * step every frame: invisible, but a real pixel change across the whole
+   * surface, so the compositor repaints all of it. Coalesced to animation
+   * frames and driven straight through the ref so it never triggers a React
+   * render of its own.
+   */
+  const framePending = useRef(false);
+  const paintPhase = useRef(0);
+
+  /**
+   * One coalesced flush per animation frame while dragging. It does two things:
+   *
+   *  - Repaints the whole layered backdrop so the bubble leaves no ghost on this
+   *    on-screen window (Windows only invalidates the changed rect otherwise).
+   *  - Streams the live rect to the control window so the RECORDER's composited
+   *    camera tracks the drag in real time. The recorder draws only from
+   *    settings.camera.rect; without a per-move update the recorded camera sat
+   *    still and jumped to the final spot on release ("teleport"). The overlay
+   *    window itself is excluded from capture, so this IPC is the only thing
+   *    that moves the camera in the take.
+   *
+   * Coalescing to a frame caps this at ~60 IPC/s during an active drag — cheap,
+   * and nothing is sent when the pointer is idle.
+   */
+  const scheduleDragFrame = () => {
+    if (framePending.current) return;
+    framePending.current = true;
+    requestAnimationFrame(() => {
+      framePending.current = false;
+      const wrap = wrapRef.current;
+      if (wrap) {
+        paintPhase.current ^= 1;
+        wrap.style.backgroundColor = `rgba(0,0,${paintPhase.current},0.004)`;
+      }
+      const live = latestRef.current;
+      if (live && dragRef.current) window.ez.control.send('control:cameraRect', live);
+    });
+  };
 
   const onPointerDown = (
     e: React.PointerEvent,
@@ -218,16 +258,10 @@ function CameraBubble() {
     }
 
     latestRef.current = next;
-    // Media box and its selection frame are siblings (the frame must sit
-    // outside the clip so a circular bubble cannot swallow the anchors), so
-    // both are painted here rather than one riding along with the other.
-    for (const node of [bubbleRef.current, frameRef.current]) {
-      if (!node) continue;
-      node.style.left = `${next.x * 100}%`;
-      node.style.top = `${next.y * 100}%`;
-      node.style.width = `${next.w * 100}%`;
-      node.style.height = `${next.h * 100}%`;
-    }
+    setRect(next);
+    // Repaint the layered backdrop AND stream the live rect to the recorder,
+    // both coalesced to one animation frame.
+    scheduleDragFrame();
   };
 
   const onPointerUp = (e: React.PointerEvent) => {
@@ -235,6 +269,10 @@ function CameraBubble() {
     const final = latestRef.current;
     dragRef.current = null;
     latestRef.current = null;
+    // One last full repaint so the final vacated position is cleared too, then
+    // drop the backdrop back to nothing.
+    const wrap = wrapRef.current;
+    if (wrap) wrap.style.backgroundColor = 'transparent';
     if (drag && final) {
       setRect(final);
       // Keep the app preview in lockstep with the on-screen bubble.
@@ -280,7 +318,6 @@ function CameraBubble() {
       onPointerCancel={onPointerUp}
     >
       <div
-        ref={bubbleRef}
         data-cam-hit=""
         style={{
           position: 'absolute',
@@ -322,7 +359,6 @@ function CameraBubble() {
           capture, and the bubble beneath is what the recorder actually sees. */}
       {hasFeed && (
         <div
-          ref={frameRef}
           style={{
             position: 'absolute',
             left: `${rect.x * 100}%`,

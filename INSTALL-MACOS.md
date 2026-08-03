@@ -1,9 +1,37 @@
-# Installing Ez Screen Record on macOS
+# Ez Screen Record on macOS — build & install
 
 This build is **ad-hoc signed**, not signed with an Apple Developer ID. It runs
 fine on any Mac, but macOS adds friction the first time. How much friction
 depends entirely on **how the app reached the machine** — pick the first method
 you can.
+
+---
+
+## Building the app from source
+
+The Mac app cannot be built on Windows — signing, the hardened runtime and the
+`.dmg` tooling are macOS-only. Build it **on a Mac**, in one step:
+
+```sh
+./scripts/build-mac.sh
+```
+
+That installs dependencies, downloads the macOS ffmpeg build (with the
+`videotoolbox`/`avfoundation` features the recorder needs), and packages the
+installer. When it finishes, the `.dmg` is in `release/`:
+
+- `Ez Screen Record <version> arm64.dmg` — Apple Silicon (M1/M2/M3…)
+- `Ez Screen Record <version> x64.dmg` — Intel
+
+Prerequisites: **Node.js 18+** and **Xcode Command Line Tools**
+(`xcode-select --install`). No Apple Developer account is needed for an ad-hoc
+build.
+
+> Prefer to run the steps yourself? The script is just:
+> `npm install && npm run fetch:ffmpeg && npm run dist:mac`.
+
+Open the `.dmg`, drag **Ez Screen Record** into **Applications**, then follow the
+install steps below.
 
 ---
 
@@ -90,3 +118,16 @@ macOS recordings use H.264 4:2:0 at a high bitrate. The Windows build records
 4:4:4, which keeps small coloured text slightly crisper, but Apple's hardware
 encoder (VideoToolbox) has no 4:4:4 mode for H.264. The bitrate is raised to
 compensate as far as it can.
+
+## System audio (desktop sound) — not captured on macOS
+
+Both engines record the **screen, microphone and camera** on macOS. Neither
+captures **system/desktop audio** (the sound the Mac itself is playing):
+
+- The ffmpeg ("best quality") engine's loopback capture is Windows-only.
+- The browser ("flexible") engine relies on Electron's `loopback` audio, which
+  Apple supports only on Windows.
+
+Capturing Mac system audio needs a different mechanism (a CoreAudio tap /
+ScreenCaptureKit), which this build does not include yet. Microphone narration
+works normally.

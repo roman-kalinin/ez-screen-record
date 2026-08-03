@@ -120,7 +120,15 @@ public sealed partial class MainWindow
         var files = await picker.PickMultipleFilesAsync();
         if (files is null || files.Count == 0) return;
 
-        foreach (var file in files)
+        // Cap at 12 images. Add only up to the remaining slots rather than
+        // appending everything and then trimming — trimming from the front
+        // silently deleted the user's oldest, already-placed overlays whenever
+        // a new drop pushed the count over the cap.
+        const int maxImages = 12;
+        var free = maxImages - Settings.Images.Count;
+        var toAdd = files.Take(Math.Max(0, free)).ToList();
+
+        foreach (var file in toAdd)
         {
             Settings.Images.Add(new ImageOverlay
             {
@@ -130,8 +138,12 @@ public sealed partial class MainWindow
             });
         }
 
-        // Settings cap at 12 images; trim here so the UI matches what persists.
-        while (Settings.Images.Count > 12) Settings.Images.RemoveAt(0);
+        if (toAdd.Count < files.Count)
+        {
+            Toast($"Image limit reached ({maxImages})",
+                $"Added {toAdd.Count} of {files.Count}; remove some to add more.",
+                ToastKind.Info);
+        }
 
         Settings.Save();
         RefreshImageList();
@@ -520,7 +532,7 @@ public sealed partial class MainWindow
     /// </summary>
     private bool _pauseInFlight;
 
-    /// <summary>Drive every state-dependent piece of chrome from one place.</summary>
+    /// <summary>Toggle pause/resume, guarding against re-entry mid-transition.</summary>
     private async void TogglePause()
     {
         if (_state is not (RecordingState.Recording or RecordingState.Paused)) return;
@@ -601,12 +613,9 @@ public sealed partial class MainWindow
     private CameraBubbleWindow? _bubble;
 
     /// <summary>
-    /// The webcam as a real window on the desktop, which the screen capture
-    /// picks up like anything else.
-    ///
-    /// This is the default because of frame rate, not looks: compositing the
-    /// camera through libplacebo's framesync'd blend paces the whole graph off
-    /// the webcam, so a 30fps camera drags a 60fps take down to ~21 unique fps.
+    /// Show the webcam as a real desktop window the screen capture picks up.
+    /// This is the default camera path for frame-rate reasons -- see
+    /// <see cref="Views.CameraBubbleWindow"/> for the full rationale.
     /// </summary>
     private async void ShowCameraBubble()
     {
