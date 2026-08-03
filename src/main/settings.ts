@@ -35,6 +35,7 @@ export function loadSettings(): AppSettings {
       camera,
       images: Array.isArray(parsed.images) ? parsed.images : [],
       draw: { ...DEFAULT_SETTINGS.draw, ...(parsed.draw ?? {}) },
+      menuBarIcon: parsed.menuBarIcon ?? DEFAULT_SETTINGS.menuBarIcon,
     };
   } catch {
     return { ...DEFAULT_SETTINGS, recording: { ...DEFAULT_SETTINGS.recording } };

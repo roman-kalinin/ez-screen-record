@@ -20,6 +20,9 @@ const api = {
 
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
   setSettings: (s: AppSettings): Promise<boolean> => ipcRenderer.invoke('settings:set', s),
+  /** Report the recorder state so the macOS menu-bar menu stays accurate. */
+  setRecordingState: (state: string): Promise<boolean> =>
+    ipcRenderer.invoke('app:recordingState', state),
 
   overlay: {
     show: () => ipcRenderer.invoke('overlay:show'),

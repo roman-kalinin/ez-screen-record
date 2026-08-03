@@ -329,6 +329,8 @@ export function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [loaded, setLoaded] = useState(false);
   const [state, setState] = useState<RecordingState>('idle');
+  // macOS gets the optional menu-bar-icon setting; hidden elsewhere.
+  const [isMac, setIsMac] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [countdown, setCountdown] = useState(0);
   const [drawing, setDrawing] = useState(false);
@@ -445,6 +447,10 @@ export function App() {
       setSettings(loadedSettings);
       setOutputDir(loadedSettings.recording.outputDir || (await window.ez.defaultOutputDir()));
       setAppVersion(await window.ez.appVersion());
+      window.ez
+        .appearance()
+        .then(({ platform }) => setIsMac(platform === 'darwin'))
+        .catch(() => {});
       setLoaded(true);
 
       // Device labels are only populated after permission is granted, so ask
@@ -1274,6 +1280,17 @@ export function App() {
     });
   }, [toggleRecord, togglePause, toggleDrawing, clearDrawing]);
 
+  // Keep the main process (and thus the macOS menu-bar menu) informed of the
+  // recording state, which lives here for the browser engine.
+  useEffect(() => {
+    void window.ez.setRecordingState(state);
+  }, [state]);
+
+  // The menu-bar "Settings…" item asks the renderer to open the panel.
+  useEffect(() => {
+    return window.ez.on('menu:openSettings', () => setSettingsOpen(true));
+  }, []);
+
   // Commands coming back from the toolbar window.
   useEffect(() => {
     const offs = [
@@ -1763,6 +1780,25 @@ export function App() {
                   ? 'The toolbar stays visible to you but never appears in the video. It is also hidden from Zoom and Teams shares while recording.'
                   : 'The toolbar is recorded along with everything else on screen.'}
               </Text>
+
+              {isMac && (
+                <>
+                  <Switch
+                    checked={settings.menuBarIcon}
+                    label="Show menu bar icon"
+                    onChange={(_e, d) =>
+                      setSettings((p) => ({ ...p, menuBarIcon: d.checked }))
+                    }
+                  />
+                  <Text
+                    size={100}
+                    style={{ color: tokens.colorNeutralForeground3, marginTop: '-4px' }}
+                  >
+                    Adds an Ez Screen Record icon to the macOS menu bar with quick actions:
+                    start/stop, pause, toggle drawing, settings and quit.
+                  </Text>
+                </>
+              )}
 
               <Divider />
 

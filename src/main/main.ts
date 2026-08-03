@@ -17,6 +17,7 @@ import type { CaptureSource, AppSettings } from '../shared/types';
 import { loadSettings, saveSettings, defaultOutputDir } from './settings';
 import { listAllWindows, restoreWindowForCapture } from './window-list';
 import { remuxToMp4 } from './remux';
+import { createTray, destroyTray, isTrayActive, setTrayRecordingState } from './tray';
 import {
   ensureScreenPermission,
   openSettingsFor,
@@ -579,6 +580,41 @@ function exitToolbarMode() {
   if (!userPinnedOnTop) controlWindow.setAlwaysOnTop(false);
 }
 
+/** Bring the control window to the front, recreating it if it was closed. */
+function focusControlWindow() {
+  if (controlWindow && !controlWindow.isDestroyed()) {
+    if (controlWindow.isMinimized()) controlWindow.restore();
+    controlWindow.show();
+    controlWindow.focus();
+  } else {
+    createControlWindow();
+  }
+  if (process.platform === 'darwin') app.dock?.show();
+}
+
+/**
+ * Create or destroy the macOS menu-bar item to match the `menuBarIcon` setting.
+ * macOS-only; a no-op elsewhere. Safe to call repeatedly.
+ */
+function syncTray() {
+  if (process.platform !== 'darwin') return;
+  const want = loadSettings().menuBarIcon;
+  if (want && !isTrayActive()) {
+    createTray({
+      showWindow: focusControlWindow,
+      sendHotkey: (action) => controlWindow?.webContents.send('hotkey', action),
+      openSettings: () => {
+        focusControlWindow();
+        controlWindow?.webContents.send('menu:openSettings');
+      },
+      getVersion: () => app.getVersion(),
+      quit: () => app.quit(),
+    });
+  } else if (!want && isTrayActive()) {
+    destroyTray();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // IPC
 // ---------------------------------------------------------------------------
@@ -666,6 +702,16 @@ function registerIpc() {
   ipcMain.handle('settings:get', () => loadSettings());
   ipcMain.handle('settings:set', (_e, s: AppSettings) => {
     saveSettings(s);
+    // The menu-bar toggle lives in these settings, so reconcile after every
+    // save — cheap, and it means enabling/disabling it takes effect at once.
+    syncTray();
+    return true;
+  });
+
+  // The renderer owns the recording state (the browser engine records there),
+  // so it pushes changes here to keep the tray menu's labels accurate.
+  ipcMain.handle('app:recordingState', (_e, state: string) => {
+    setTrayRecordingState(state);
     return true;
   });
 
@@ -1230,6 +1276,8 @@ if (!gotLock) {
     // rather than paying for React and the Fluent bundle mid-take.
     createToolbarWindow(screen.getPrimaryDisplay());
     registerHotkeys();
+    // Bring up the menu-bar item if the user has enabled it (macOS only).
+    syncTray();
 
     // Fires for both light/dark switches and accent-colour changes.
     nativeTheme.on('updated', () => {
@@ -1261,6 +1309,7 @@ if (!gotLock) {
   app.on('before-quit', () => {
     nativeRecorder?.dispose();
     nativeRecorder = null;
+    destroyTray();
   });
   app.on('will-quit', () => globalShortcut.unregisterAll());
   app.on('window-all-closed', () => app.quit());

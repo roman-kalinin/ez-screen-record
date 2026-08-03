@@ -6,6 +6,17 @@ something. The version is stamped into the installer filename
 (`Ez Screen Record Setup 1.2.0.exe`) and shown in the app's Settings menu, so an
 installed copy can always be identified.
 
+## 1.4.0 — 2026-08-03
+
+### Added
+- **Optional macOS menu-bar icon (off by default).** Enable it under Settings →
+  Recording behaviour → "Show menu bar icon". It adds an Ez Screen Record status
+  item with quick actions — Open, Start/Stop Recording, Pause/Resume (enabled
+  while recording), Toggle Drawing, Settings…, the version, and Quit. The
+  recording actions reuse the same paths as the global shortcuts, so they behave
+  identically to the in-app controls, and the Start/Stop and Pause/Resume labels
+  track the current take.
+
 ## 1.3.3 — 2026-08-03
 
 ### Fixed

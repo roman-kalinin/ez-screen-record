@@ -217,6 +217,11 @@ export interface AppSettings {
   camera: CameraOverlay;
   images: ImageOverlay[];
   draw: DrawSettings;
+  /**
+   * Show a macOS menu-bar icon with quick actions (Start/Stop, Pause, Toggle
+   * Drawing, Settings, Quit). Off by default; macOS-only.
+   */
+  menuBarIcon: boolean;
 }
 
 /**
@@ -310,4 +315,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
     color: '#ff3b30',
     width: 4,
   },
+  menuBarIcon: false,
 };
