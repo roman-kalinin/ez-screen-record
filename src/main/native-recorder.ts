@@ -688,10 +688,20 @@ export class NativeRecorder {
         `${layers.join('')}libplacebo=inputs=${layers.length}:` +
           `w=${canvasW}:h=${canvasH}:fit_mode=fill:format=${q.pixFmt}[out]`,
       );
-    } else {
-      // Nothing to composite: straight off the GPU and into the encoder. No
-      // Vulkan, no rgba round-trip — correct colours and a clean cursor.
+    } else if (CAPTURE_IS_HW) {
+      // Windows: ddagrab hands over a D3D11 texture. Download it, then scale.
+      // No Vulkan, no rgba round-trip — correct colours and a clean cursor.
       chains.push(`[0:v]${download}${scaleStep},format=${q.pixFmt}[out]`);
+    } else {
+      // macOS: avfoundation already delivers system-memory frames, typically at
+      // a large Retina backing size, and every filter here runs on the CPU per
+      // frame. Two changes cut the stutter:
+      //   * ONE swscale pass — the old `format=bgra` intermediate was a whole
+      //     extra full-frame conversion before the final `format=yuv420p`.
+      //   * `bilinear` instead of `lanczos` when downscaling: lanczos is far
+      //     heavier and the difference is invisible on a live screen grab.
+      const macScale = outH ? `scale=-2:${outH}:flags=bilinear,` : '';
+      chains.push(`[0:v]${macScale}format=${q.pixFmt}[out]`);
     }
 
     args.push('-filter_complex', chains.join(';'), '-map', '[out]');
@@ -718,6 +728,14 @@ export class NativeRecorder {
 
       args.push(
         '-c:v', 'h264_videotoolbox',
+        // This is a LIVE screen grab, so the encoder must keep pace with the
+        // capture rather than fall behind and buffer — the default lets it
+        // queue frames, which is exactly the stutter seen on Macs. `realtime`
+        // trades a little quality for pace only when it can't otherwise keep
+        // up; `prio_speed` biases the same way. Together they are the single
+        // biggest fix for VideoToolbox lag during capture.
+        '-realtime', 'true',
+        '-prio_speed', 'true',
         '-b:v', `${mbps}M`,
         // Ceiling well above the target: screen content is mostly static and
         // then changes all at once, and a tight cap smears exactly those

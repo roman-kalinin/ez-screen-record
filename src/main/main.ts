@@ -113,6 +113,8 @@ function createControlWindow() {
   const winWidth = Math.min(880, workArea.width - 80);
   const winHeight = Math.round(winWidth * 0.5625) + 130;
 
+  const isMac = process.platform === 'darwin';
+
   controlWindow = new BrowserWindow({
     width: winWidth,
     height: winHeight,
@@ -121,7 +123,10 @@ function createControlWindow() {
     minWidth: 560,
     minHeight: 420,
     show: false,
-    frame: false,
+    // Windows renders its own controls, so a fully frameless window is right.
+    // macOS must NOT be frameless: `frame: false` also removes the traffic
+    // lights, which are the correct, expected window controls there.
+    frame: !isMac,
     icon: appIconPath() || undefined,
     // Deliberately NOT using backgroundMaterial:'mica'. Mica conflicts with
     // setContentProtection — the combination is unstable and lets the window
@@ -131,6 +136,10 @@ function createControlWindow() {
     backgroundColor: '#202020',
     transparent: false,
     titleBarStyle: 'hidden',
+    // Keep the real macOS traffic lights but centre them vertically in our
+    // 32px custom title bar (see App.tsx `titlebar`). Without this they sit at
+    // the OS default offset, overlapping the app title.
+    ...(isMac ? { trafficLightPosition: { x: 14, y: 9 } } : {}),
     webPreferences: {
       preload: preloadPath(),
       contextIsolation: true,
@@ -1071,7 +1080,7 @@ function registerIpc() {
     } catch {
       /* keep the fallback */
     }
-    return { accent, dark: nativeTheme.shouldUseDarkColors };
+    return { accent, dark: nativeTheme.shouldUseDarkColors, platform: process.platform };
   });
 }
 

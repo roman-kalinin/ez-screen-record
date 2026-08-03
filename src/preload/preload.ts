@@ -119,7 +119,7 @@ const api = {
   /** Version of the running build, e.g. "1.1.0". */
   appVersion: (): Promise<string> => ipcRenderer.invoke('app:version'),
   /** System accent colour and light/dark preference. */
-  appearance: (): Promise<{ accent: string; dark: boolean }> =>
+  appearance: (): Promise<{ accent: string; dark: boolean; platform: string }> =>
     ipcRenderer.invoke('system:appearance'),
   revealFile: (p: string) => ipcRenderer.invoke('shell:revealFile', p),
   openPath: (p: string) => ipcRenderer.invoke('shell:openPath', p),

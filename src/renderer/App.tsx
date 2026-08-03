@@ -490,6 +490,19 @@ export function App() {
     }
   }, [cams, loaded, settings.camera.deviceId]);
 
+  // Default the microphone to the first device in the list on first launch, so
+  // narration is captured out of the box without opening the picker. Mirrors
+  // the camera default above; the whole-screen source is defaulted separately
+  // in refreshSources once the source list is available.
+  useEffect(() => {
+    if (loaded && mics.length > 0 && !settings.recording.micDeviceId) {
+      setSettings((p) => ({
+        ...p,
+        recording: { ...p.recording, micDeviceId: mics[0].deviceId },
+      }));
+    }
+  }, [mics, loaded, settings.recording.micDeviceId]);
+
   // Push live overlay geometry changes into an in-progress recording.
   useEffect(() => {
     if (isActiveTake(state)) {
@@ -1394,6 +1407,7 @@ export function App() {
             }}
           />
           <Button
+            className="titlebar-winctl"
             appearance="subtle"
             size="small"
             icon={<SubtractRegular />}
@@ -1401,6 +1415,7 @@ export function App() {
             title="Minimize"
           />
           <Button
+            className="titlebar-winctl"
             appearance="subtle"
             size="small"
             icon={<DismissRegular />}

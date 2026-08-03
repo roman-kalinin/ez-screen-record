@@ -16,9 +16,12 @@ function Root() {
   const [dark, setDark] = useState(true);
 
   useEffect(() => {
-    window.ez.appearance().then(({ accent: a, dark: d }) => {
+    window.ez.appearance().then(({ accent: a, dark: d, platform }) => {
       setAccent(a);
       setDark(d);
+      // Drive platform-conditional CSS (e.g. the macOS title-bar inset that
+      // clears the traffic lights). Set once — the OS platform never changes.
+      document.documentElement.dataset.platform = platform;
     });
     // Follow the OS when the user changes theme or accent colour.
     return window.ez.on('appearanceChanged', (a: { accent: string; dark: boolean }) => {

@@ -34,6 +34,18 @@ body,
   -webkit-app-region: no-drag;
 }
 
+/* macOS keeps the real traffic lights (top-left). Reserve room so the app
+   title clears them — ~72px covers three ~14px buttons from a 14px origin —
+   and hide our own minimize/close buttons, which would otherwise duplicate the
+   native controls. `data-platform` is set from process.platform in main.tsx.
+   The pin/keep-on-top button stays: it has no native equivalent. */
+html[data-platform='darwin'] .titlebar {
+  padding-left: 72px;
+}
+html[data-platform='darwin'] .titlebar-winctl {
+  display: none;
+}
+
 /* Recording toolbar: the title bar is hidden, so the control bar's own
    background becomes the drag handle. Its buttons opt back out, which leaves
    the gaps between them draggable — enough to reposition the bar. */

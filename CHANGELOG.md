@@ -6,6 +6,35 @@ something. The version is stamped into the installer filename
 (`Ez Screen Record Setup 1.2.0.exe`) and shown in the app's Settings menu, so an
 installed copy can always be identified.
 
+## 1.3.0 — 2026-08-03
+
+### Added
+- **Auto source selection on first launch.** With nothing saved yet, the app now
+  picks the first microphone in the list and defaults to capturing the whole
+  primary screen, so a new install can record immediately without opening the
+  pickers. (The camera already defaulted to the first device.)
+
+### Changed
+- **The browser ("Flexible") engine is now the default capture engine.** It is
+  the most stable across platforms — records single windows, switches source
+  mid-take with no seam, and does not depend on the OS hardware-encoder path
+  that can stutter. Existing installs keep whatever engine they had saved; only
+  fresh installs get the new default. Switch to "Best quality" for maximum text
+  sharpness on a machine whose ffmpeg encode keeps up in real time.
+
+### Fixed
+- **macOS window header.** The control window was built with Windows-only chrome
+  and never knew the platform, so on macOS the native traffic lights overlapped
+  the app title and the app drew its own Minimize/Close buttons that duplicated
+  the system controls. macOS now centres the real traffic lights in the title
+  bar, insets the title clear of them, and hides the duplicate buttons (the
+  keep-on-top pin stays — it has no native equivalent).
+- **macOS ffmpeg ("Best quality") engine stutter.** `h264_videotoolbox` now
+  encodes with `-realtime`/`-prio_speed`, so it keeps pace with live capture
+  instead of queuing frames, and the screen-only filter path does a single
+  swscale conversion (was two) with a cheaper `bilinear` downscale. The Windows
+  ddagrab + NVENC path is unchanged.
+
 ## 1.2.1 — 2026-08-03
 
 ### Fixed

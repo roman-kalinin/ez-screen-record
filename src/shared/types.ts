@@ -282,11 +282,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
     fps: 30,
     resolution: 'source',
     countdownSeconds: 3,
-    // Default to ffmpeg. The webcam is shown as an on-screen bubble that the
-    // desktop capture picks up, so 'crisp' not compositing it internally costs
-    // nothing -- and it is the only engine that keeps screen text legible.
-    // Switch to 'overlay' to record a single window.
-    engine: 'crisp',
+    // Default to the browser ('overlay') engine: it is the most stable across
+    // platforms — it records single windows, switches source mid-take with no
+    // seam, and does not depend on the OS hardware-encoder path that makes the
+    // ffmpeg engine stutter on some machines (notably macOS/VideoToolbox).
+    // Switch to 'crisp' for maximum text sharpness when capturing a whole
+    // screen on a machine whose ffmpeg encode keeps up in real time.
+    engine: 'overlay',
     quality: 'high',
     outputDir: null,
     hideToolbarFromCapture: true,
