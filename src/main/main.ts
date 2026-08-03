@@ -17,7 +17,12 @@ import type { CaptureSource, AppSettings } from '../shared/types';
 import { loadSettings, saveSettings, defaultOutputDir } from './settings';
 import { listAllWindows, restoreWindowForCapture } from './window-list';
 import { remuxToMp4 } from './remux';
-import { ensureScreenPermission, primePermissions } from './mac-permissions';
+import {
+  ensureScreenPermission,
+  openSettingsFor,
+  permissionStatus,
+  primePermissions,
+} from './mac-permissions';
 import {
   NativeRecorder,
   listCaptureDevices,
@@ -550,11 +555,22 @@ function registerIpc() {
     // other 4 were returned. Neither the WGC feature flags nor disabling them
     // changes this. The user-facing fix is to say so in the picker rather than
     // silently show a short list — restore the window and refresh.
-    const sources = await desktopCapturer.getSources({
-      types: ['screen', 'window'],
-      thumbnailSize: { width: 320, height: 200 },
-      fetchWindowIcons: false,
-    });
+    // On macOS, getSources THROWS when Screen Recording permission is denied
+    // (rather than returning an empty list), and the rejection propagates all
+    // the way to the picker as a bare "No screens found." Swallow it here and
+    // let the renderer read the permission status separately, so it can explain
+    // what to do instead of silently showing nothing.
+    let sources: Electron.DesktopCapturerSource[];
+    try {
+      sources = await desktopCapturer.getSources({
+        types: ['screen', 'window'],
+        thumbnailSize: { width: 320, height: 200 },
+        fetchWindowIcons: false,
+      });
+    } catch (err) {
+      console.warn('[sources] getSources failed (likely missing permission)', err);
+      return [];
+    }
 
     const listed = sources
       // Filter out our own windows so the user can't record the recorder.
@@ -596,6 +612,18 @@ function registerIpc() {
     const handle = sourceId.split(':')[1];
     if (!handle) return false;
     return restoreWindowForCapture(handle);
+  });
+
+  /**
+   * Screen-recording permission state, so the picker can distinguish "no
+   * sources exist" from "macOS is blocking us". Returns 'granted' on Windows.
+   */
+  ipcMain.handle('permissions:screenStatus', () => permissionStatus('screen'));
+
+  /** Deep-link into the Screen Recording pane of System Settings (macOS). */
+  ipcMain.handle('permissions:openScreenSettings', () => {
+    openSettingsFor('screen');
+    return true;
   });
 
   ipcMain.handle('settings:get', () => loadSettings());

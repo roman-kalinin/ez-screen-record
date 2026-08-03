@@ -6,6 +6,25 @@ something. The version is stamped into the installer filename
 (`Ez Screen Record Setup 1.2.0.exe`) and shown in the app's Settings menu, so an
 installed copy can always be identified.
 
+## 1.2.1 — 2026-08-03
+
+### Fixed
+- **macOS: the source picker showed "No screens found" when Screen Recording
+  permission was missing.** On macOS `desktopCapturer.getSources` *throws* when
+  the permission is denied rather than returning an empty list, and the
+  rejection surfaced as a bare, empty picker with no explanation. The list call
+  now swallows that error, and the picker reads the permission state and shows a
+  "Screen Recording permission needed" panel with a button that deep-links
+  straight to the correct System Settings pane, plus the reminder to quit and
+  reopen the app so macOS actually applies the grant.
+
+### Housekeeping
+- `scripts/build-mac.sh` is now marked executable, so `./scripts/build-mac.sh`
+  runs directly instead of failing with "permission denied".
+- Added `scripts/Fix-Ez-Screen-Record.command`, a double-clickable helper that
+  clears the macOS quarantine flag for users who receive the app by download,
+  Slack, email or AirDrop — no Terminal typing required.
+
 ## 1.2.0 — 2026-08-03
 
 ### Added

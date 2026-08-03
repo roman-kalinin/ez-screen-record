@@ -342,6 +342,9 @@ export function App() {
   // Screen/window sources live here now so the picker can list them.
   const [sources, setSources] = useState<CaptureSource[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(true);
+  // macOS gates screen capture; 'granted' on Windows. When not granted the
+  // source list comes back empty, so the picker needs this to explain why.
+  const [screenPermission, setScreenPermission] = useState<string>('granted');
   const [sourceDialogOpen, setSourceDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [nativeAvailable, setNativeAvailable] = useState(false);
@@ -1210,6 +1213,14 @@ export function App() {
     }
     setSources(list);
 
+    // Read screen-recording permission so the picker can tell "nothing to
+    // capture" apart from "macOS is blocking us" — the latter is the usual
+    // reason the list is empty on a fresh install.
+    window.ez.permissions
+      .screenStatus()
+      .then(setScreenPermission)
+      .catch(() => setScreenPermission('granted'));
+
     // Drop a saved source that no longer exists. A window id persisted from a
     // previous session points at a window that has since closed, and recording
     // then fails with nothing shown to the user — the record button appears to
@@ -1901,6 +1912,7 @@ export function App() {
         }}
         sources={sources}
         loading={sourcesLoading}
+        screenPermission={screenPermission}
         value={settings.recording.screenSourceId}
         onChange={async (id) => {
           // A minimized window has nothing to capture until it is restored;

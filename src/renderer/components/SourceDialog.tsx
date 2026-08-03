@@ -87,6 +87,16 @@ const useStyles = makeStyles({
     textOverflow: 'ellipsis',
   },
   center: { display: 'grid', placeItems: 'center', padding: '40px' },
+  permission: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '12px',
+    textAlign: 'center',
+    padding: '32px 24px',
+    maxWidth: '440px',
+    margin: '0 auto',
+  },
 });
 
 interface Props {
@@ -94,6 +104,13 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   sources: CaptureSource[];
   loading: boolean;
+  /**
+   * macOS screen-recording permission: 'granted' | 'denied' | 'restricted' |
+   * 'not-determined' | 'unknown'. Always 'granted' on Windows. When it is not
+   * 'granted' the source list is empty because macOS is blocking enumeration,
+   * not because there is nothing to record.
+   */
+  screenPermission?: string;
   value: string | null;
   onChange: (id: string | null) => void;
   onRefresh: () => void;
@@ -104,12 +121,16 @@ export function SourceDialog({
   onOpenChange,
   sources,
   loading,
+  screenPermission = 'granted',
   value,
   onChange,
   onRefresh,
 }: Props) {
   const s = useStyles();
   const [tab, setTab] = useState<'screen' | 'window'>('screen');
+  // Only treat permission as the blocker while the list is genuinely empty:
+  // if sources came through, capture works and the status is moot.
+  const permissionBlocked = screenPermission !== 'granted' && sources.length === 0;
 
   // Follow the current selection when the dialog opens.
   useEffect(() => {
@@ -126,6 +147,36 @@ export function SourceDialog({
         <DialogBody>
           <DialogTitle>Choose what to record</DialogTitle>
           <DialogContent>
+            {!loading && permissionBlocked ? (
+              <div className={s.permission}>
+                <Text weight="semibold" size={400}>
+                  Screen Recording permission needed
+                </Text>
+                <Text size={200} style={{ color: tokens.colorNeutralForeground2 }}>
+                  macOS is blocking Ez Screen Record from seeing your screens and
+                  windows. Enable <b>Ez Screen Record</b> under System Settings ›
+                  Privacy &amp; Security › <b>Screen &amp; System Audio Recording</b>,
+                  then <b>quit and reopen the app</b> — macOS only applies this
+                  permission on a fresh launch.
+                </Text>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                  <Button
+                    appearance="primary"
+                    onClick={() => void window.ez.permissions.openScreenSettings()}
+                  >
+                    Open System Settings
+                  </Button>
+                  <Button
+                    appearance="secondary"
+                    icon={<ArrowSyncRegular />}
+                    onClick={onRefresh}
+                  >
+                    Refresh
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <>
             <div className={s.header}>
               <TabList
                 size="small"
@@ -188,6 +239,8 @@ export function SourceDialog({
                   </button>
                 ))}
               </div>
+            )}
+              </>
             )}
           </DialogContent>
           <DialogActions>

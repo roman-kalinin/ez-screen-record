@@ -9,6 +9,15 @@ const api = {
   restoreWindow: (sourceId: string): Promise<boolean> =>
     ipcRenderer.invoke('sources:restoreWindow', sourceId),
 
+  /** macOS capture-permission helpers. 'granted' on Windows. */
+  permissions: {
+    /** 'granted' | 'denied' | 'restricted' | 'not-determined' | 'unknown'. */
+    screenStatus: (): Promise<string> => ipcRenderer.invoke('permissions:screenStatus'),
+    /** Open the Screen Recording pane of System Settings (macOS). */
+    openScreenSettings: (): Promise<boolean> =>
+      ipcRenderer.invoke('permissions:openScreenSettings'),
+  },
+
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
   setSettings: (s: AppSettings): Promise<boolean> => ipcRenderer.invoke('settings:set', s),
 
