@@ -170,12 +170,55 @@ export interface AppSettings {
   draw: DrawSettings;
 }
 
-export type RecordingState = 'idle' | 'countdown' | 'recording' | 'paused' | 'saving';
+/**
+ * `pausing` and `resuming` are the in-between states of a native take.
+ *
+ * ffmpeg cannot pause: each pause finalises a segment and each resume spawns a
+ * fresh process, so both take a moment. Without a state for that moment the
+ * button simply looked dead — the click registered but nothing changed until
+ * the operation completed.
+ */
+export type RecordingState =
+  | 'idle'
+  | 'countdown'
+  /**
+   * ffmpeg has been asked to start but has not confirmed frames yet. The
+   * toolbar is already up (it must be, so it stays out of the capture), so
+   * without this state the bar sat there reading 00:00 as though nothing was
+   * happening — which is exactly what a slow start looked like.
+   */
+  | 'starting'
+  | 'recording'
+  | 'pausing'
+  | 'paused'
+  | 'resuming'
+  | 'saving';
+
+/**
+ * Is a take under way? True for the paused and transitional states too — the
+ * recorder exists and holds its devices throughout, so live-edit pushes and
+ * mid-take UI must all treat these the same as `recording`.
+ */
+export function isActiveTake(s: RecordingState): boolean {
+  return (
+    s === 'recording' ||
+    s === 'starting' ||
+    s === 'paused' ||
+    s === 'pausing' ||
+    s === 'resuming'
+  );
+}
 
 export interface SaveResult {
   ok: boolean;
   filePath?: string;
   error?: string;
+  /**
+   * Epoch ms at which capture actually began, for a native start. The renderer
+   * anchors its clock here rather than to when the IPC call returned, so the
+   * startup period is counted rather than lost.
+   */
+  startedAt?: number;
 }
 
 /** Hotkey actions registered globally so they work while other apps are focused. */

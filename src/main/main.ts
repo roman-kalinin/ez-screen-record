@@ -715,6 +715,7 @@ function registerIpc() {
 
   // --- Native (crisp) capture ---------------------------------------------
   ipcMain.handle('native:available', () => NativeRecorder.isAvailable());
+  ipcMain.handle('native:canPause', () => NativeRecorder.canPause());
   ipcMain.handle('native:devices', () => listDshowDevices());
   ipcMain.handle('native:audioDevices', () => listDshowAudioDevices());
 
@@ -827,13 +828,41 @@ function registerIpc() {
             : null,
           displayId: await resolveDisplayId(),
         });
-        return { ok: true, filePath: outputPath };
+        // The moment ffmpeg was launched, not the moment this handler
+        // returned — the renderer's clock is anchored to it, and the gap
+        // between the two is exactly the startup time the timer used to lose.
+        return { ok: true, filePath: outputPath, startedAt: Date.now() - nativeRecorder.elapsedMs };
       } catch (err) {
         nativeRecorder = null;
         return { ok: false, error: (err as Error).message };
       }
     },
   );
+
+  /**
+   * Pause/resume the ffmpeg take. Reports the resulting state so the renderer
+   * follows what actually happened rather than what it assumed — a failed
+   * resume must not leave the UI claiming the take is live.
+   */
+  ipcMain.handle('native:pause', async () => {
+    try {
+      if (!nativeRecorder) return { ok: false, error: 'Not recording.' };
+      await nativeRecorder.pause();
+      return { ok: true, paused: true };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message, paused: nativeRecorder?.isPaused ?? false };
+    }
+  });
+
+  ipcMain.handle('native:resume', async () => {
+    try {
+      if (!nativeRecorder) return { ok: false, error: 'Not recording.' };
+      await nativeRecorder.resume();
+      return { ok: true, paused: false };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message, paused: nativeRecorder?.isPaused ?? true };
+    }
+  });
 
   ipcMain.handle('native:stop', async () => {
     try {
@@ -863,6 +892,12 @@ function registerIpc() {
   ipcMain.handle('shell:openPath', (_e, p: string) => shell.openPath(p));
 
   ipcMain.handle('paths:defaultOutputDir', () => defaultOutputDir());
+
+  // The running build's version, so an installed copy can identify itself.
+  // Read from Electron rather than importing package.json: in a packaged app
+  // the manifest is inside the asar, and app.getVersion() is the value
+  // electron-builder actually stamped into the installer and the exe.
+  ipcMain.handle('app:version', () => app.getVersion());
 
   /**
    * The user's Windows accent colour and light/dark preference, so the app

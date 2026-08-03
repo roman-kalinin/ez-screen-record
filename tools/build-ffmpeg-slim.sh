@@ -312,6 +312,11 @@ make distclean >/dev/null 2>&1 || true
   --enable-demuxer=matroska \
   --enable-demuxer=h264 \
   --enable-demuxer=aac \
+  `# Pause splits a take into segments and joins them on stop. Without this` \
+  `# the join has no mechanism at all: there is no concat FILTER either, and` \
+  `# the raw-elementary-stream workaround cannot carry AAC because the adts` \
+  `# muxer is likewise absent. Costs ~20KB.` \
+  --enable-demuxer=concat \
   --enable-demuxer=wav \
   --enable-demuxer=image2 \
   --enable-demuxer=png_pipe \

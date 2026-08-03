@@ -106,6 +106,14 @@ export interface NativeRecordOptions {
 }
 
 /** CRF and chroma per preset. Lower CRF = higher quality, bigger files. */
+/**
+ * Backstop for "did ffmpeg start?", only reached when no frame is ever
+ * reported. Measured: `Output #0` at ~99ms, but the first NON-ZERO frame count
+ * at ~1620ms on a 1440p ddagrab path — so this has to sit comfortably above
+ * that, or a healthy-but-slow start would be declared ready before it was.
+ */
+const START_TIMEOUT_MS = 4000;
+
 const PRESETS: Record<QualityPreset, { crf: string; pixFmt: string; preset: string }> = {
   // Visually lossless for screen content.
   high: { crf: '16', pixFmt: 'yuv444p', preset: 'veryfast' },
@@ -171,13 +179,175 @@ export class NativeRecorder {
   private outputPath = '';
   private startedAt = 0;
   private stderrTail: string[] = [];
+  /** Set when EZ_FFMPEG_DEBUG is on; full stderr is mirrored here. */
+  private debugLog = '';
+
+  /**
+   * Pause is implemented by SPLITTING THE TAKE INTO SEGMENTS.
+   *
+   * ffmpeg has no pause: it is a pipe, and there is no signal that suspends
+   * capture without also breaking the container. SIGSTOP looks right and is
+   * not — the muxer keeps the wall-clock timestamps it had already queued, so
+   * the paused span reappears in the output as a frozen frame of exactly that
+   * duration, and the audio drifts by the same amount for the rest of the take.
+   *
+   * So each pause finalises the current segment (`q` on stdin, the same clean
+   * shutdown stop uses, which is what gives it a moov atom) and each resume
+   * spawns a fresh ffmpeg writing the next one. Stop concatenates them with
+   * the concat demuxer and `-c copy`: a stream copy, so it is lossless and
+   * effectively instant. The paused span genuinely does not exist in the
+   * output rather than being encoded and cut later.
+   *
+   * These mirror the WinUI port's Recorder.PauseAsync/ResumeAsync, which
+   * solved the same problem the same way.
+   */
+  private segments: string[] = [];
+  private currentSegment = '';
+  /** Monotonic segment counter; drives the .partN suffix. */
+  private segmentSeq = 0;
+  private resumeOpts: NativeRecordOptions | null = null;
+  private pausedAt = 0;
+  private pausedTotal = 0;
 
   get isRecording(): boolean {
     return this.proc !== null && !this.proc.killed;
   }
 
+  get isPaused(): boolean {
+    return this.pausedAt !== 0;
+  }
+
+  /** Wall-clock since start, MINUS every paused span. */
   get elapsedMs(): number {
-    return this.startedAt ? Date.now() - this.startedAt : 0;
+    if (!this.startedAt) return 0;
+    const now = this.pausedAt || Date.now();
+    return now - this.startedAt - this.pausedTotal;
+  }
+
+  /**
+   * `take.mp4` -> `take.partN.mp4`, beside the real output.
+   *
+   * EVERY segment gets its own file, including the first.
+   *
+   * Segment one used to be written straight to `outputPath`, which made the
+   * join read and overwrite the same file: `-f concat -i list.txt -c copy
+   * out.mp4` truncated its own first input, and an 11.6s take collapsed to
+   * the 0.46s that survived the race. The output path is now purely a
+   * destination that nothing records into.
+   */
+  private nextSegmentPath(): string {
+    const ext = path.extname(this.outputPath);
+    const base = this.outputPath.slice(0, -ext.length);
+    return `${base}.part${++this.segmentSeq}${ext}`;
+  }
+
+  async pause(): Promise<void> {
+    if (!this.proc || this.isPaused) throw new Error('No native recording is running.');
+
+    // Finish the segment properly so it can be concatenated; killing the
+    // process would leave an unplayable fragment with no moov atom.
+    const finished = this.currentSegment || this.outputPath;
+    await this.stopProcess();
+
+    this.segments.push(finished);
+    this.pausedAt = Date.now();
+  }
+
+  async resume(): Promise<void> {
+    if (!this.isPaused || !this.resumeOpts) throw new Error('The recording is not paused.');
+
+    const next = this.nextSegmentPath();
+    try {
+      await this.spawnFfmpeg({ ...this.resumeOpts, outputPath: next });
+    } catch (err) {
+      // Stay paused and leave the clock untouched. Crediting the pause before
+      // knowing the restart worked meant a failed resume followed by a
+      // successful one counted the same span twice, and a pause longer than
+      // the footage drove elapsed negative.
+      try {
+        if (fs.existsSync(next)) fs.unlinkSync(next);
+      } catch {
+        /* best effort */
+      }
+      throw err;
+    }
+
+    this.pausedTotal += Date.now() - this.pausedAt;
+    this.pausedAt = 0;
+    this.currentSegment = next;
+  }
+
+  /**
+   * Join the segments into the real output with the concat demuxer.
+   * `-c copy` is a stream copy: no re-encode, so it is lossless and fast.
+   *
+   * The demuxer is NOT guaranteed to be present. The bundled ffmpeg is built
+   * `--disable-everything` with an explicit enable list, and `concat` was not
+   * on it (tools/build-ffmpeg-slim.sh now adds it, but an already-installed
+   * copy predates that). There is no fallback worth having: this build also
+   * lacks the concat FILTER, and the raw-elementary-stream trick cannot carry
+   * the microphone because the `adts` muxer is missing too.
+   *
+   * So when the join is impossible, the SEGMENTS ARE KEPT and the caller is
+   * told. Losing a take to a missing muxer would be far worse than handing
+   * back two playable files.
+   */
+  private async concatSegments(parts: string[]): Promise<void> {
+    const joiner = await concatCapableFfmpeg();
+    if (!joiner) {
+      throw new Error(
+        `No available ffmpeg can join paused segments, so the take was left as ` +
+          `${parts.length} separate files next to the output:\n` +
+          parts.map((p) => path.basename(p)).join('\n') +
+          `\n\nThey are playable as-is. Install a full ffmpeg, or rebuild the ` +
+          `bundled one with --enable-demuxer=concat (tools/build-ffmpeg-slim.sh).`,
+      );
+    }
+
+    const listPath = `${this.outputPath}.concat.txt`;
+    // The concat demuxer resolves relative paths against the list file, and
+    // treats `'` specially — quote and escape rather than interpolating raw.
+    const body = parts.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
+    fs.writeFileSync(listPath, body, 'utf8');
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const proc = spawn(
+          joiner,
+          ['-hide_banner', '-y', '-f', 'concat', '-safe', '0', '-i', listPath,
+            '-c', 'copy', this.outputPath],
+          { windowsHide: true },
+        );
+        let err = '';
+        proc.stderr?.on('data', (d: Buffer) => (err += String(d)));
+        proc.on('error', reject);
+        proc.on('close', (code) =>
+          code === 0 ? resolve() : reject(new Error(explainFailure(err, code))),
+        );
+      });
+    } catch (err) {
+      // Leave the pieces on disk -- they are the whole take.
+      try {
+        fs.unlinkSync(listPath);
+      } catch {
+        /* best effort */
+      }
+      throw err;
+    }
+
+    // Only once the join succeeded is it safe to drop the pieces.
+    try {
+      fs.unlinkSync(listPath);
+    } catch {
+      /* best effort */
+    }
+    for (const p of parts) {
+      try {
+        fs.unlinkSync(p);
+      } catch {
+        /* best effort */
+      }
+    }
   }
 
   static async isAvailable(): Promise<boolean> {
@@ -205,8 +375,51 @@ export class NativeRecorder {
     return hasFilter('libplacebo');
   }
 
+  /**
+   * Can a take be paused and still come back as ONE file?
+   *
+   * Pause splits the take into segments, and joining them needs the concat
+   * demuxer. Without it the pieces cannot be recombined at all, so the button
+   * is hidden rather than offered — a pause that silently fragments the
+   * recording is worse than no pause.
+   */
+  static async canPause(): Promise<boolean> {
+    if (!(await hasFfmpeg())) return false;
+    return hasConcatDemuxer();
+  }
+
   async start(opts: NativeRecordOptions): Promise<void> {
     if (this.proc) throw new Error('A native recording is already running.');
+
+    this.outputPath = opts.outputPath;
+    this.segments = [];
+    this.segmentSeq = 0;
+    // Kept so resume can respawn with identical settings.
+    this.resumeOpts = opts;
+    // Cleared so spawnFfmpeg stamps a fresh start; a leftover value from an
+    // earlier take would make the new one begin mid-clock.
+    this.startedAt = 0;
+    this.pausedAt = 0;
+    this.pausedTotal = 0;
+
+    // Record into part1, NOT into outputPath -- see nextSegmentPath.
+    this.currentSegment = this.nextSegmentPath();
+    await this.spawnFfmpeg({ ...opts, outputPath: this.currentSegment });
+    // Stamped INSIDE spawnFfmpeg, at the moment the process was launched --
+    // not here, after the readiness wait. Setting it afterwards discarded the
+    // whole startup period, so the timer under-reported every take by however
+    // long ffmpeg took to come up.
+  }
+
+  /**
+   * Build the graph and spawn ffmpeg for ONE segment.
+   *
+   * Split out of `start` so `resume` produces a byte-identical pipeline for
+   * the next segment — the concat demuxer requires matching codec parameters
+   * across the pieces, so rebuilding the arguments any other way would risk
+   * segments that refuse to join.
+   */
+  private async spawnFfmpeg(opts: NativeRecordOptions): Promise<void> {
     if (!(await hasFfmpeg())) {
       throw new Error(
         IS_MAC
@@ -216,7 +429,6 @@ export class NativeRecorder {
     }
 
     fs.mkdirSync(path.dirname(opts.outputPath), { recursive: true });
-    this.outputPath = opts.outputPath;
 
     const preset = PRESETS[opts.quality];
 
@@ -479,13 +691,64 @@ export class NativeRecorder {
 
     args.push(opts.outputPath);
 
+    if (process.env.EZ_FFMPEG_DEBUG) {
+      const logPath = path.join(path.dirname(opts.outputPath), 'ffmpeg-debug.log');
+      try {
+        fs.appendFileSync(
+          logPath,
+          `\n\n===== ${new Date().toISOString()} =====\n${ffmpegPath()} ${args.join(' ')}\n`,
+        );
+        this.debugLog = logPath;
+      } catch {
+        /* best effort */
+      }
+    }
+
     this.proc = spawn(ffmpegPath(), args, { windowsHide: true });
-    this.startedAt = Date.now();
     this.stderrTail = [];
+    // Only on the FIRST segment: a resume must not restart the clock.
+    if (!this.startedAt) this.startedAt = Date.now();
+
+    // Resolve as soon as ffmpeg PROVES it is encoding, not after a fixed wait.
+    //
+    // This used to be a flat `setTimeout(resolve, 1800)`, which made every
+    // start -- and every resume, which comes back through here -- cost 1.8s of
+    // dead time before the UI was told anything. The clock therefore sat at
+    // 00:00 while capture was already running, and the first ~1.8s of every
+    // take was missing from the timer.
+    //
+    // Readiness is a NON-ZERO frame count and nothing else. Measured on the
+    // 1440p ddagrab path: "Output #0" at ~200ms, first real frame at ~2180ms.
+    //
+    // The timeout stays as a BACKSTOP only: some configurations buffer stderr
+    // differently, and a take that is genuinely running must not be refused
+    // just because the expected line never showed up.
+    let sawProgress: (() => void) | null = null;
 
     this.proc.stderr?.on('data', (d: Buffer) => {
-      this.stderrTail.push(String(d));
+      const chunk = String(d);
+      this.stderrTail.push(chunk);
       if (this.stderrTail.length > 60) this.stderrTail.shift();
+      if (this.debugLog) {
+        try {
+          fs.appendFileSync(this.debugLog, chunk);
+        } catch {
+          /* best effort */
+        }
+      }
+      // A NON-ZERO frame count is the only honest proof that capture is
+      // running.
+      //
+      // `Output #0` was tried here and is wrong: ffmpeg prints it while still
+      // opening devices -- measured at 99ms, against 1620ms for the first real
+      // frame. Treating it as readiness let start() return before ddagrab had
+      // produced anything.
+      //
+      // `frame=    0` is equally untrustworthy: ffmpeg emits progress lines on
+      // a timer from the moment encoding begins, and the first two carried a
+      // zero count.
+      const m = /frame=\s*(\d+)/.exec(chunk);
+      if (sawProgress && m && Number(m[1]) > 0) sawProgress();
     });
 
     this.proc.on('error', () => {
@@ -495,9 +758,22 @@ export class NativeRecorder {
     // Surface an immediate failure (bad device, missing filter) rather than
     // letting the caller believe recording is under way.
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, 1800);
-      this.proc?.once('close', (code) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
+        sawProgress = null;
+        resolve();
+      };
+      const timer = setTimeout(finish, START_TIMEOUT_MS);
+      sawProgress = finish;
+
+      this.proc?.once('close', (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        sawProgress = null;
         this.proc = null;
         reject(new Error(explainFailure(this.stderrTail.join(''), code)));
       });
@@ -514,8 +790,50 @@ export class NativeRecorder {
    * flush is what makes the final second of a recording usable.
    */
   async stop(): Promise<string> {
+    // A paused take has no live process, but it does have finished segments
+    // that still need joining — returning early here would strand them on
+    // disk and lose everything recorded before the pause.
+    if (!this.proc && !this.isPaused) throw new Error('No native recording is running.');
+
+    if (this.proc) {
+      await this.stopProcess();
+      if (this.currentSegment) this.segments.push(this.currentSegment);
+    }
+
+    const parts = this.segments.filter((p) => {
+      try {
+        return fs.statSync(p).size > 0;
+      } catch {
+        return false;
+      }
+    });
+
+    try {
+      if (parts.length === 1) {
+        // A take that was never paused is ONE segment: just move it into
+        // place. No ffmpeg, so an unpaused take never depends on the concat
+        // demuxer being present.
+        fs.renameSync(parts[0], this.outputPath);
+      } else if (parts.length > 1) {
+        await this.concatSegments(parts);
+      }
+    } finally {
+      this.segments = [];
+      this.currentSegment = '';
+      this.segmentSeq = 0;
+      this.resumeOpts = null;
+      this.startedAt = 0;
+      this.pausedAt = 0;
+      this.pausedTotal = 0;
+    }
+
+    return this.outputPath;
+  }
+
+  /** Ask ffmpeg to finalise the current segment and wait for it to exit. */
+  private async stopProcess(): Promise<void> {
     const proc = this.proc;
-    if (!proc) throw new Error('No native recording is running.');
+    if (!proc) return;
 
     const done = new Promise<void>((resolve) => {
       proc.once('close', () => resolve());
@@ -534,23 +852,34 @@ export class NativeRecorder {
 
     await done;
     this.proc = null;
-    this.startedAt = 0;
-    return this.outputPath;
   }
 
   async cancel(): Promise<void> {
-    if (!this.proc) return;
+    // A paused take has no process but does have segments on disk. Returning
+    // early here would leave them orphaned and the recorder stuck paused.
+    if (!this.proc && !this.isPaused) return;
+
     const file = this.outputPath;
+    const parts = [...this.segments, this.currentSegment];
+
     try {
       await this.stop();
     } catch {
       /* ignore */
     }
-    try {
-      if (fs.existsSync(file)) fs.unlinkSync(file);
-    } catch {
-      /* ignore */
+    for (const p of new Set([...parts, file])) {
+      try {
+        if (p && fs.existsSync(p)) fs.unlinkSync(p);
+      } catch {
+        /* ignore */
+      }
     }
+
+    this.segments = [];
+    this.currentSegment = '';
+    this.resumeOpts = null;
+    this.pausedAt = 0;
+    this.pausedTotal = 0;
   }
 }
 
@@ -600,6 +929,64 @@ function explainFailure(stderr: string, code: number | null): string {
   return lastLine
     ? `Recording could not start: ${lastLine}`
     : `Recording could not start (ffmpeg exit ${code}).`;
+}
+
+/** Does the ffmpeg at `bin` have the concat demuxer compiled in? */
+function probeConcat(bin: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(v);
+    };
+    const proc = spawn(bin, ['-hide_banner', '-demuxers'], { windowsHide: true });
+    let out = '';
+    proc.stdout.on('data', (d) => (out += d));
+    proc.on('error', () => done(false));
+    // Match the listing's own column layout ("  D   concat"), so a stray
+    // mention of the word elsewhere in the output cannot pass for support.
+    proc.on('close', () => done(/^\s*D\s+concat\s/m.test(out)));
+    setTimeout(() => {
+      proc.kill();
+      done(false);
+    }, 5000);
+  });
+}
+
+/**
+ * An ffmpeg that can join segments, or null if there is none.
+ *
+ * The BUNDLED binary is deliberately slim (`--disable-everything` plus an
+ * enable list) and shipped without the concat demuxer, so joining a paused
+ * take can need a different binary than capturing it did. That split is safe:
+ * capture needs ddagrab/libplacebo/nvenc and must stay on the bundled build,
+ * but the join is a plain stream copy that any stock ffmpeg performs
+ * identically.
+ *
+ * Cached — probed on every stop of a paused take, and the answer cannot
+ * change while the app is running.
+ */
+let concatBin: string | null | undefined;
+async function concatCapableFfmpeg(): Promise<string | null> {
+  if (concatBin !== undefined) return concatBin;
+
+  const candidates = [ffmpegPath()];
+  // A PATH ffmpeg is worth trying only when it is not the one already checked.
+  if (ffmpegPath() !== 'ffmpeg') candidates.push('ffmpeg');
+
+  for (const bin of candidates) {
+    if (await probeConcat(bin)) {
+      concatBin = bin;
+      return concatBin;
+    }
+  }
+  concatBin = null;
+  return concatBin;
+}
+
+function hasConcatDemuxer(): Promise<boolean> {
+  return concatCapableFfmpeg().then((b) => b !== null);
 }
 
 /** Is a given ffmpeg filter compiled into this build? */

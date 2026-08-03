@@ -22,10 +22,13 @@ import {
   Tooltip,
 } from '@fluentui/react-components';
 import {
-  RecordRegular,
-  StopRegular,
-  PauseRegular,
-  PlayRegular,
+  // FILLED transport icons — see toolbar.tsx for why: the outline variants
+  // are too thin to read at a glance, and these are the controls that carry
+  // the recording state.
+  RecordFilled,
+  StopFilled,
+  PauseFilled,
+  PlayFilled,
   InkStrokeRegular,
   ImageAddRegular,
   ImageRegular,
@@ -61,6 +64,7 @@ import {
   type Rect,
   type RecordingState,
   type ResolutionPreset,
+  isActiveTake,
 } from '../shared/types';
 
 const useStyles = makeStyles({
@@ -180,6 +184,27 @@ const useStyles = makeStyles({
     fontSize: '20px',
     fontWeight: 600,
     letterSpacing: '0.5px',
+  },
+  /**
+   * Paused chrome, in amber.
+   *
+   * A paused take freezes the clock, which on its own is indistinguishable
+   * from a hung app -- so the state has to be stated, not merely implied by a
+   * stopped number.
+   */
+  timerPaused: { color: '#ffb020' },
+  pausedBadge: {
+    fontSize: '13px',
+    fontWeight: 600,
+    letterSpacing: '0.4px',
+    color: '#ffb020',
+    flexShrink: 0,
+    whiteSpace: 'nowrap',
+  },
+  roundBtnPaused: {
+    background: 'rgba(255,176,32,0.22)',
+    color: '#ffb020',
+    ':hover': { background: 'rgba(255,176,32,0.32)' },
   },
   spacer: { flex: 1 },
   row: { display: 'flex', alignItems: 'center', gap: '8px' },
@@ -302,12 +327,15 @@ export function App() {
   const [cams, setCams] = useState<MediaDevice[]>([]);
   const [mics, setMics] = useState<MediaDevice[]>([]);
   const [outputDir, setOutputDir] = useState<string>('');
+  const [appVersion, setAppVersion] = useState<string>('');
   const [hotkeyConflicts, setHotkeyConflicts] = useState<string[]>([]);
   // Screen/window sources live here now so the picker can list them.
   const [sources, setSources] = useState<CaptureSource[]>([]);
   const [sourcesLoading, setSourcesLoading] = useState(true);
   const [sourceDialogOpen, setSourceDialogOpen] = useState(false);
   const [nativeAvailable, setNativeAvailable] = useState(false);
+  /** ffmpeg can rejoin paused segments, so pause is safe to offer. */
+  const [nativeCanPause, setNativeCanPause] = useState(false);
   /** True while ffmpeg owns the capture devices — the preview must let go. */
   const [captureSuspended, setCaptureSuspended] = useState(false);
   /** dshow device names — ffmpeg addresses devices by name, not id. */
@@ -328,18 +356,29 @@ export function App() {
   const cancelCountdownRef = useRef(false);
   /** Wall-clock start of an ffmpeg take; the browser recorder times itself. */
   const nativeStartRef = useRef(0);
+  /**
+   * Guards pause/resume, which are async for a native take: each one tears
+   * down or spawns an ffmpeg process, so a double-click could otherwise
+   * interleave two of them and leave orphaned segments.
+   */
+  const pausingRef = useRef(false);
+  /** Total paused time in an ffmpeg take, so the timer excludes it. */
+  const nativePausedTotalRef = useRef(0);
+  const nativePausedAtRef = useRef(0);
   // beginRecording is reached from a global hotkey and from a stable callback,
   // so anything it reads must come from a ref — a value captured in the
   // closure would be whatever it was on first render. This bit me: the app
   // silently used the browser encoder because `nativeAvailable` was still
   // false in the captured scope.
   const nativeAvailableRef = useRef(false);
+  const nativeCanPauseRef = useRef(false);
   const camsRef = useRef<MediaDevice[]>([]);
   const micsRef = useRef<MediaDevice[]>([]);
   const nativeCamsRef = useRef<string[]>([]);
   const nativeMicsRef = useRef<string[]>([]);
   const sourcesRef = useRef<CaptureSource[]>([]);
   nativeAvailableRef.current = nativeAvailable;
+  nativeCanPauseRef.current = nativeCanPause;
   camsRef.current = cams;
   micsRef.current = mics;
   nativeCamsRef.current = nativeCams;
@@ -382,6 +421,7 @@ export function App() {
       const loadedSettings = await window.ez.getSettings();
       setSettings(loadedSettings);
       setOutputDir(loadedSettings.recording.outputDir || (await window.ez.defaultOutputDir()));
+      setAppVersion(await window.ez.appVersion());
       setLoaded(true);
 
       // Device labels are only populated after permission is granted, so ask
@@ -430,13 +470,13 @@ export function App() {
   // Push live overlay geometry changes into an in-progress recording.
   // Push live overlay geometry changes into an in-progress recording.
   useEffect(() => {
-    if (state === 'recording' || state === 'paused') {
+    if (isActiveTake(state)) {
       void recorderRef.current.updateCamera(settings.camera);
     }
   }, [settings.camera, state]);
 
   useEffect(() => {
-    if (state === 'recording' || state === 'paused') {
+    if (isActiveTake(state)) {
       recorderRef.current.updateImages(settings.images);
     }
   }, [settings.images, state]);
@@ -444,13 +484,13 @@ export function App() {
   // Sources can be changed mid-take — switch monitor, swap mic — without
   // interrupting the recording.
   useEffect(() => {
-    if (state !== 'recording' && state !== 'paused') return;
+    if (!isActiveTake(state)) return;
     const id = settings.recording.screenSourceId;
     if (id) void recorderRef.current.updateScreenSource(id, settings.recording.fps);
   }, [settings.recording.screenSourceId, settings.recording.fps, state]);
 
   useEffect(() => {
-    if (state !== 'recording' && state !== 'paused') return;
+    if (!isActiveTake(state)) return;
     void recorderRef.current.updateMicrophone(
       settings.recording.micDeviceId,
       settings.recording.micEnabled,
@@ -525,6 +565,7 @@ export function App() {
         sourcesRef.current.find(
           (x) => x.id === settingsRef.current.recording.screenSourceId,
         )?.name ?? '',
+      canPause: nativeStartRef.current ? nativeCanPauseRef.current : true,
     });
   }, []);
 
@@ -593,7 +634,11 @@ export function App() {
       // showing 00:00, even though it is content-protected. Protection is
       // applied when the window is created, but the window still has to be
       // shown and composited, and ffmpeg was already running by then.
-      stateRef.current = 'recording';
+      // 'starting', not 'recording': ffmpeg has not confirmed frames yet, and
+      // claiming the take is live leaves the bar showing a frozen 00:00 for
+      // the whole startup.
+      stateRef.current = 'starting';
+      setState('starting');
       pushToolbarState();
       void window.ez.toolbar.send('toolbar:elapsed', 0);
       await window.ez.window.setToolbarMode(true);
@@ -619,8 +664,15 @@ export function App() {
         setState('idle');
         return;
       }
-      nativeStartRef.current = Date.now();
+      // Anchored to when ffmpeg actually started, not to now — the difference
+      // is the startup time, which the clock would otherwise skip.
+      nativeStartRef.current = res.startedAt ?? Date.now();
+      nativePausedTotalRef.current = 0;
+      nativePausedAtRef.current = 0;
+      stateRef.current = 'recording';
       setState('recording');
+      // Take the toolbar out of "Starting…" — it has no other way to know.
+      pushToolbarState();
       return;
     }
 
@@ -691,6 +743,8 @@ export function App() {
       setState('saving');
       const res = await window.ez.native.stop();
       nativeStartRef.current = 0;
+      nativePausedTotalRef.current = 0;
+      nativePausedAtRef.current = 0;
       if (res.ok && res.filePath) {
         const p = res.filePath;
         dispatchToast(
@@ -733,16 +787,87 @@ export function App() {
     recorderRef.current.stop();
   }, [dispatchToast, notify]);
 
-  const togglePause = useCallback(() => {
-    const rec = recorderRef.current;
-    if (rec.state === 'recording') {
-      rec.pause();
-      setState('paused');
-    } else if (rec.state === 'paused') {
-      rec.resume();
-      setState('recording');
+  const togglePause = useCallback(async () => {
+    let next: RecordingState;
+
+    // The ffmpeg path, when it is the one actually recording.
+    //
+    // This is what "pause does nothing" was: the app records through ffmpeg
+    // whenever the GPU path is available (which it is on any machine with a
+    // 4:4:4-capable encoder), but togglePause only ever spoke to the browser
+    // ScreenRecorder. Its state is 'inactive' during a native take, so both
+    // branches were skipped and the click fell through in silence.
+    if (nativeStartRef.current) {
+      // Reachable from the global hotkey even when the button is hidden.
+      if (!nativeCanPauseRef.current) {
+        notify(
+          'Pause is not available',
+          'This ffmpeg build cannot rejoin a paused take. Rebuild with --enable-demuxer=concat.',
+          'warning',
+        );
+        return;
+      }
+      if (pausingRef.current) return;
+      pausingRef.current = true;
+      try {
+        const paused = stateRef.current === 'paused';
+
+        // Show the transition IMMEDIATELY. Finalising a segment or spawning a
+        // fresh ffmpeg takes a moment, and without this the button absorbed
+        // the click and looked broken until the operation finished.
+        const transitional: RecordingState = paused ? 'resuming' : 'pausing';
+        stateRef.current = transitional;
+        setState(transitional);
+        pushToolbarState();
+
+        const res = paused ? await window.ez.native.resume() : await window.ez.native.pause();
+        if (!res.ok) {
+          notify(paused ? 'Could not resume' : 'Could not pause', res.error, 'error');
+        }
+        // Follow what the recorder reports, not what was intended: a failed
+        // resume must not leave the UI claiming the take is live.
+        next = res.paused ? 'paused' : 'recording';
+
+        // Credit the paused span only once the resume actually succeeded,
+        // and only on the transition -- crediting it optimistically made a
+        // failed-then-successful resume count the same span twice.
+        if (next === 'paused' && !nativePausedAtRef.current) {
+          nativePausedAtRef.current = Date.now();
+        } else if (next === 'recording' && nativePausedAtRef.current) {
+          nativePausedTotalRef.current += Date.now() - nativePausedAtRef.current;
+          nativePausedAtRef.current = 0;
+        }
+      } finally {
+        pausingRef.current = false;
+      }
+    } else {
+      const rec = recorderRef.current;
+      if (rec.state === 'recording') {
+        rec.pause();
+        next = 'paused';
+      } else if (rec.state === 'paused') {
+        rec.resume();
+        next = 'recording';
+      } else {
+        return;
+      }
     }
-  }, []);
+
+    setState(next);
+
+    // Push to the toolbar HERE, not from an effect on `state`.
+    //
+    // The toolbar lives in its own window and only learns the state through
+    // this channel. Nothing else pushes on pause -- pushToolbarState fires on
+    // native start and on the toolbar's own mount request -- so even once the
+    // recorder paused correctly, the bar kept showing a Pause button on a held
+    // take.
+    //
+    // stateRef is written directly because pushToolbarState reads the ref, and
+    // the `stateRef.current = state` assignment during render has not run yet.
+    stateRef.current = next;
+    pushToolbarState();
+  }, [pushToolbarState, notify]);
 
   const toggleRecord = useCallback(() => {
     const cur = stateRef.current;
@@ -802,7 +927,7 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (state !== 'recording' && state !== 'paused') return;
+    if (!isActiveTake(state)) return;
     void window.ez.toolbar.send('toolbar:state', {
       state,
       drawing,
@@ -829,7 +954,7 @@ export function App() {
   // The clock goes over on its own, as a bare number, once a second — the
   // toolbar only renders whole seconds, so 5x a second bought nothing.
   useEffect(() => {
-    if (state !== 'recording' && state !== 'paused') return;
+    if (!isActiveTake(state)) return;
     void window.ez.toolbar.send('toolbar:elapsed', Math.floor(elapsed / 1000));
   }, [Math.floor(elapsed / 1000), state]);
 
@@ -850,7 +975,7 @@ export function App() {
   // start: turning the camera off and on again mid-take left that flag false,
   // so the config stopped being sent and the bubble never came back.
   useEffect(() => {
-    if (state !== 'recording' && state !== 'paused') return;
+    if (!isActiveTake(state)) return;
 
     if (settings.camera.enabled && settings.camera.deviceId) {
       if (!onScreenCameraRef.current) {
@@ -877,6 +1002,9 @@ export function App() {
     window.ez.native.available().then(async (ok) => {
       setNativeAvailable(ok);
       if (!ok) return;
+      // Pause needs the concat demuxer to rejoin the segments. Probed once so
+      // the button can be hidden rather than offered and then failing.
+      setNativeCanPause(await window.ez.native.canPause());
       const { audio, video } = await window.ez.native.devices();
       setNativeMics(audio);
       setNativeCams(video);
@@ -884,10 +1012,17 @@ export function App() {
   }, []);
 
   // ffmpeg records out-of-process, so the elapsed timer is driven here.
+  //
+  // The paused span is subtracted rather than the interval merely being
+  // stopped: pausing for a minute and resuming would otherwise make the clock
+  // jump a minute forward the moment it restarted, since it is derived from
+  // wall-clock. This mirrors NativeRecorder.elapsedMs.
   useEffect(() => {
     if (state !== 'recording' || !nativeStartRef.current) return;
     const id = window.setInterval(() => {
-      if (nativeStartRef.current) setElapsed(Date.now() - nativeStartRef.current);
+      if (nativeStartRef.current) {
+        setElapsed(Date.now() - nativeStartRef.current - nativePausedTotalRef.current);
+      }
     }, 200);
     return () => window.clearInterval(id);
   }, [state]);
@@ -1029,7 +1164,23 @@ export function App() {
   );
 
 
-  const busy = state === 'recording' || state === 'paused' || state === 'countdown';
+  const busy = isActiveTake(state) || state === 'countdown';
+  /**
+   * Pause is only offered when the engine actually running the take supports
+   * it. The browser recorder always does; the ffmpeg path needs the concat
+   * demuxer to rejoin the segments a pause creates.
+   */
+  const canPause = nativeStartRef.current ? nativeCanPause : true;
+  /** Mid-transition: the click landed, ffmpeg is still working on it. */
+  const transitioning = state === 'pausing' || state === 'resuming';
+  /**
+   * Show held chrome from the moment Pause is clicked through to Resume
+   * completing — `pausing` and `paused` both read as held, and `resuming`
+   * keeps it until frames are genuinely flowing again.
+   */
+  const held = state === 'paused' || transitioning;
+  const heldLabel =
+    state === 'pausing' ? 'Pausing…' : state === 'resuming' ? 'Resuming…' : 'Paused';
   const activeSource = sources.find((x) => x.id === settings.recording.screenSourceId);
 
   return (
@@ -1096,7 +1247,7 @@ export function App() {
             (It was NOT the cause of the periodic stalls — that was dshow's
             audio buffer, see native-recorder.ts — but it is still pure waste
             while invisible.) */}
-        {!(state === 'recording' || state === 'paused') && (
+        {!isActiveTake(state) && (
         <LayoutStage
           screenSourceId={settings.recording.screenSourceId}
           camera={settings.camera}
@@ -1390,6 +1541,15 @@ export function App() {
                   Change
                 </Button>
               </div>
+
+              <Divider />
+
+              {/* Which build this is. Every installer carries its version in
+                  the filename, but once installed there was no way to tell
+                  one from another -- so it is stated here too. */}
+              <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
+                Ez Screen Record {appVersion ? `v${appVersion}` : ''}
+              </Text>
             </div>
           </MenuPopover>
         </Menu>
@@ -1431,7 +1591,11 @@ export function App() {
         <div className={s.spacer} />
 
         {/* Elapsed time only once there is something to time. */}
-        {busy && state !== 'countdown' && <Text className={s.timer}>{formatTime(elapsed)}</Text>}
+        {held && <Text className={s.pausedBadge}>{heldLabel}</Text>}
+        {state === 'starting' && <Text className={s.pausedBadge}>Starting…</Text>}
+        {busy && state !== 'countdown' && state !== 'starting' && (
+          <Text className={`${s.timer} ${held ? s.timerPaused : ''}`}>{formatTime(elapsed)}</Text>
+        )}
 
         {/* Primary action, in the hang-up position. */}
         {state === 'idle' || state === 'saving' ? (
@@ -1442,23 +1606,27 @@ export function App() {
               disabled={state === 'saving' || !settings.recording.screenSourceId}
               aria-label="Start recording"
             >
-              <RecordRegular fontSize={22} />
+              <RecordFilled fontSize={22} />
             </button>
           </Tooltip>
         ) : (
           <>
-            {state !== 'countdown' && (
-              <Tooltip
-                content={state === 'paused' ? 'Resume' : 'Pause'}
-                relationship="label"
-                withArrow
-              >
-                <button className={s.roundBtn} onClick={togglePause}>
-                  {state === 'paused' ? (
-                    <PlayRegular fontSize={20} />
-                  ) : (
-                    <PauseRegular fontSize={20} />
-                  )}
+            {state !== 'countdown' && canPause && (
+              <Tooltip content={heldLabel} relationship="label" withArrow>
+                <button
+                  className={`${s.roundBtn} ${held ? s.roundBtnPaused : ''}`}
+                  onClick={togglePause}
+                  // Disabled only DURING the transition, so a second click
+                  // cannot interleave two ffmpeg operations.
+                  disabled={transitioning}
+                  aria-label={state === 'paused' ? 'Resume recording' : 'Pause recording'}
+                  aria-pressed={state === 'paused'}
+                  aria-busy={transitioning}
+                >
+                  {/* Flips on CLICK, not on completion: during `pausing` the
+                      take is already on its way to held, so showing Play
+                      immediately is what makes the button feel responsive. */}
+                  {held ? <PlayFilled fontSize={20} /> : <PauseFilled fontSize={20} />}
                 </button>
               </Tooltip>
             )}
@@ -1468,7 +1636,7 @@ export function App() {
                 onClick={stopRecording}
                 aria-label="Stop recording"
               >
-                <StopRegular fontSize={22} />
+                <StopFilled fontSize={22} />
               </button>
             </Tooltip>
           </>
@@ -1477,7 +1645,19 @@ export function App() {
 
       <SourceDialog
         open={sourceDialogOpen}
-        onOpenChange={setSourceDialogOpen}
+        onOpenChange={(open) => {
+          setSourceDialogOpen(open);
+          // Go BACK to the toolbar when the picker closes mid-take.
+          //
+          // Opening it from the toolbar calls setToolbarMode(false) so the
+          // picker (which lives in the main window) can be seen. Nothing put
+          // the toolbar back, so closing the dialog left the main window
+          // on screen with its content hidden for the take -- an empty grey
+          // panel and no toolbar, with the recording still running.
+          if (!open && isActiveTake(stateRef.current)) {
+            void window.ez.window.setToolbarMode(true);
+          }
+        }}
         sources={sources}
         loading={sourcesLoading}
         value={settings.recording.screenSourceId}

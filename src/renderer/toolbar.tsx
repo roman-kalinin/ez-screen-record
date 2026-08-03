@@ -8,9 +8,15 @@ import {
   Tooltip,
 } from '@fluentui/react-components';
 import {
-  StopRegular,
-  PauseRegular,
-  PlayRegular,
+  // FILLED transport icons, deliberately.
+  //
+  // The Regular variants are a thin outline that all but disappears on this
+  // dark bar sitting over arbitrary desktop content. Stop/Pause/Play are the
+  // controls that must be readable mid-take at a glance, so they use the
+  // solid forms; the secondary controls stay Regular so the primaries lead.
+  StopFilled,
+  PauseFilled,
+  PlayFilled,
   InkStrokeRegular,
   MicRegular,
   MicOffRegular,
@@ -67,6 +73,37 @@ const useStyles = makeStyles({
     borderRadius: '50%',
     background: '#ff3b30',
     flexShrink: 0,
+    // Pulse while live. A steady dot and a paused dot look the same at a
+    // glance, and this bar is glanced at, not read.
+    animationName: {
+      '0%, 100%': { opacity: 1 },
+      '50%': { opacity: 0.35 },
+    },
+    animationDuration: '1.4s',
+    animationIterationCount: 'infinite',
+  },
+  /** Amber and still: held, not recording, and not hung. */
+  recDotPaused: {
+    background: '#ffb020',
+    animationName: 'none',
+  },
+  pausedBadge: {
+    fontSize: '13px',
+    fontWeight: 600,
+    letterSpacing: '0.4px',
+    color: '#ffb020',
+    flexShrink: 0,
+    whiteSpace: 'nowrap',
+  },
+  /** The timer dims while held so a frozen clock reads as intentional. */
+  timerPaused: {
+    color: '#ffb020',
+  },
+  /** Amber fill on the pause button itself — the control states its own mode. */
+  roundBtnPaused: {
+    background: 'rgba(255,176,32,0.22)',
+    color: '#ffb020',
+    ':hover': { background: 'rgba(255,176,32,0.32)' },
   },
   /**
    * Drag grip. The bar cannot use `-webkit-app-region: drag` — this window
@@ -125,6 +162,8 @@ const useStyles = makeStyles({
     color: '#fff',
     minWidth: '58px',
     textAlign: 'center',
+    // "Starting…" is wider than a timestamp and must not be clipped.
+    whiteSpace: 'nowrap',
   },
   divider: {
     width: '1px',
@@ -154,6 +193,12 @@ interface ToolbarState {
   cameraDeviceId: string | null;
   cams: MediaDevice[];
   sourceName: string;
+  /**
+   * Whether the engine recording this take can pause at all. The ffmpeg path
+   * needs the concat demuxer to rejoin the segments a pause creates; without
+   * it the button is hidden rather than offered and then failing.
+   */
+  canPause?: boolean;
 }
 
 function Toolbar() {
@@ -243,7 +288,12 @@ function Toolbar() {
   const send = (channel: string, payload?: unknown) =>
     void window.ez.control.send(channel, payload);
 
-  const paused = st.state === 'paused';
+  // `pausing`/`resuming` are the in-between states of an ffmpeg take. They
+  // read as held so the bar responds on the click rather than on completion.
+  const transitioning = st.state === 'pausing' || st.state === 'resuming';
+  const paused = st.state === 'paused' || transitioning;
+  const heldLabel =
+    st.state === 'pausing' ? 'Pausing…' : st.state === 'resuming' ? 'Resuming…' : 'Paused';
 
   return (
     <div className={s.root}>
@@ -270,7 +320,8 @@ function Toolbar() {
           </div>
         </Tooltip>
 
-        <div className={s.recDot} />
+        <div className={`${s.recDot} ${paused ? s.recDotPaused : ''}`} />
+        {paused && <Text className={s.pausedBadge}>{heldLabel}</Text>}
 
         <PillControl
           label="Microphone"
@@ -321,18 +372,31 @@ function Toolbar() {
 
         <div className={s.divider} />
 
-        <Text className={s.timer}>{formatTime(seconds)}</Text>
+        {st.state === 'starting' ? (
+          <Text className={`${s.timer} ${s.timerPaused}`}>Starting…</Text>
+        ) : (
+          <Text className={`${s.timer} ${paused ? s.timerPaused : ''}`}>{formatTime(seconds)}</Text>
+        )}
 
-        <Tooltip
-          content={paused ? 'Resume' : 'Pause'}
-          relationship="label"
-          withArrow
-          onVisibleChange={(_e, d) => holdInteractive(d.visible)}
-        >
-          <button className={s.roundBtn} onClick={() => send('toolbar:togglePause')}>
-            {paused ? <PlayRegular fontSize={20} /> : <PauseRegular fontSize={20} />}
-          </button>
-        </Tooltip>
+        {st.canPause !== false && (
+          <Tooltip
+            content={transitioning ? heldLabel : paused ? 'Resume' : 'Pause'}
+            relationship="label"
+            withArrow
+            onVisibleChange={(_e, d) => holdInteractive(d.visible)}
+          >
+            <button
+              className={`${s.roundBtn} ${paused ? s.roundBtnPaused : ''}`}
+              onClick={() => send('toolbar:togglePause')}
+              disabled={transitioning}
+              aria-label={paused ? 'Resume recording' : 'Pause recording'}
+              aria-pressed={paused}
+              aria-busy={transitioning}
+            >
+              {paused ? <PlayFilled fontSize={20} /> : <PauseFilled fontSize={20} />}
+            </button>
+          </Tooltip>
+        )}
 
         <Tooltip
           content="Stop recording (Ctrl+Shift+F9)"
@@ -345,7 +409,7 @@ function Toolbar() {
             onClick={() => send('toolbar:stop')}
             aria-label="Stop recording"
           >
-            <StopRegular fontSize={22} />
+            <StopFilled fontSize={22} />
           </button>
         </Tooltip>
       </div>

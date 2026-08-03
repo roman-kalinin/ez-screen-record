@@ -64,6 +64,8 @@ const api = {
   /** ffmpeg-backed capture: far higher quality, but cannot composite overlays. */
   native: {
     available: (): Promise<boolean> => ipcRenderer.invoke('native:available'),
+    /** Can a native take be paused and still save as one file? */
+    canPause: (): Promise<boolean> => ipcRenderer.invoke('native:canPause'),
     audioDevices: (): Promise<string[]> => ipcRenderer.invoke('native:audioDevices'),
     devices: (): Promise<{ audio: string[]; video: string[] }> =>
       ipcRenderer.invoke('native:devices'),
@@ -81,10 +83,17 @@ const api = {
       outputDir: string | null;
     }): Promise<SaveResult> => ipcRenderer.invoke('native:start', opts),
     stop: (): Promise<SaveResult> => ipcRenderer.invoke('native:stop'),
+    /** Hold the ffmpeg take. Resolves with the state that actually resulted. */
+    pause: (): Promise<{ ok: boolean; paused: boolean; error?: string }> =>
+      ipcRenderer.invoke('native:pause'),
+    resume: (): Promise<{ ok: boolean; paused: boolean; error?: string }> =>
+      ipcRenderer.invoke('native:resume'),
   },
 
   chooseOutputDir: (): Promise<string | null> => ipcRenderer.invoke('dialog:chooseOutputDir'),
   defaultOutputDir: (): Promise<string> => ipcRenderer.invoke('paths:defaultOutputDir'),
+  /** Version of the running build, e.g. "1.1.0". */
+  appVersion: (): Promise<string> => ipcRenderer.invoke('app:version'),
   /** System accent colour and light/dark preference. */
   appearance: (): Promise<{ accent: string; dark: boolean }> =>
     ipcRenderer.invoke('system:appearance'),
