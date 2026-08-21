@@ -452,9 +452,9 @@ export function App() {
     [dispatchToast],
   );
 
-  // --- Share (pixeldrain upload) ---------------------------------------------
+  // --- Share (GoFile upload) -------------------------------------------------
   /**
-   * Upload a finished recording to pixeldrain and surface the shareable link.
+   * Upload a finished recording to GoFile and surface the shareable link.
    *
    * Never throws and never blocks recording: the local file is untouched, so a
    * failed upload only costs a toast. A persistent progress toast tracks the
@@ -527,7 +527,7 @@ export function App() {
 
   /**
    * The "Recording saved" toast, shared by both save paths (browser and
-   * ffmpeg). Always offers an "Upload & share link" action — pixeldrain works
+   * ffmpeg). Always offers an "Upload & share link" action — GoFile works
    * anonymously, so there is nothing to gate on — and kicks the upload off
    * itself when auto-upload is on.
    */
@@ -1953,7 +1953,7 @@ export function App() {
 
               <Divider />
 
-              <ShareSettings share={settings.share} setSettings={setSettings} notify={notify} />
+              <ShareSettings share={settings.share} setSettings={setSettings} />
 
               {/* Which build this is. Every installer carries its version in
                   the filename, but once installed there was no way to tell

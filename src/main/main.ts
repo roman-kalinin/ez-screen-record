@@ -31,7 +31,7 @@ import {
   listDshowDevices,
   type NativeCameraOptions,
 } from './native-recorder';
-import { uploadAndShare } from './pixeldrain';
+import { uploadAndShare } from './gofile';
 import { randomUUID } from 'crypto';
 
 const isDev = process.env.NODE_ENV === 'development';
@@ -905,19 +905,18 @@ function registerIpc() {
     },
   );
 
-  // --- Share (pixeldrain upload) -------------------------------------------
+  // --- Share (GoFile upload) -----------------------------------------------
   /**
-   * Stream a finished recording to pixeldrain and return a shareable link.
+   * Stream a finished recording to GoFile and return a shareable link.
    *
    * The local file is never touched, so a failed upload can never lose the
-   * recording. Progress is streamed back on 'share:uploadProgress' as bytes
-   * are sent; the api key is read from settings here and never leaves main.
+   * recording. GoFile uploads are anonymous — no key or account. Progress is
+   * streamed back on 'share:uploadProgress' as bytes are sent.
    */
   ipcMain.handle('share:upload', async (event, filePath: string) => {
     const uploadId = randomUUID();
     try {
-      const apiKey = loadSettings().share.pixeldrainApiKey;
-      const { viewUrl } = await uploadAndShare(filePath, apiKey, uploadId, (p) => {
+      const { viewUrl } = await uploadAndShare(filePath, uploadId, (p) => {
         // The renderer window may have gone away mid-upload; don't send to it.
         if (!event.sender.isDestroyed()) {
           event.sender.send('share:uploadProgress', p);

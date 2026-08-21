@@ -212,10 +212,8 @@ export function bitrateFor(height: number, fps: number): number {
   return Math.round(Math.min(Math.max(raw, 8_000_000), 200_000_000));
 }
 
-/** One-click share of a finished recording via pixeldrain. No account needed. */
+/** One-click share of a finished recording via GoFile. Anonymous, no account. */
 export interface ShareSettings {
-  /** Optional pixeldrain API key. Empty/null = anonymous uploads. */
-  pixeldrainApiKey: string | null;
   /** Auto-upload finished recordings and copy the share link. */
   autoUpload: boolean;
 }
@@ -326,7 +324,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   menuBarIcon: false,
   share: {
-    pixeldrainApiKey: null,
     autoUpload: false,
   },
 };

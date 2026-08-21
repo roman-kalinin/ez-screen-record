@@ -117,7 +117,7 @@ const api = {
       ipcRenderer.invoke('native:resume'),
   },
 
-  /** Upload a finished recording to pixeldrain and get a shareable link.
+  /** Upload a finished recording to GoFile and get a shareable link.
    *  Progress arrives on the 'share:uploadProgress' channel via on(). */
   share: {
     upload: (
