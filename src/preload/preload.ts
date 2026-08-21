@@ -117,6 +117,15 @@ const api = {
       ipcRenderer.invoke('native:resume'),
   },
 
+  /** Upload a finished recording to pixeldrain and get a shareable link.
+   *  Progress arrives on the 'share:uploadProgress' channel via on(). */
+  share: {
+    upload: (
+      filePath: string,
+    ): Promise<{ ok: boolean; viewUrl?: string; error?: string }> =>
+      ipcRenderer.invoke('share:upload', filePath),
+  },
+
   chooseOutputDir: (): Promise<string | null> => ipcRenderer.invoke('dialog:chooseOutputDir'),
   defaultOutputDir: (): Promise<string> => ipcRenderer.invoke('paths:defaultOutputDir'),
   /** Version of the running build, e.g. "1.1.0". */

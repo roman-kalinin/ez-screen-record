@@ -212,6 +212,14 @@ export function bitrateFor(height: number, fps: number): number {
   return Math.round(Math.min(Math.max(raw, 8_000_000), 200_000_000));
 }
 
+/** One-click share of a finished recording via pixeldrain. No account needed. */
+export interface ShareSettings {
+  /** Optional pixeldrain API key. Empty/null = anonymous uploads. */
+  pixeldrainApiKey: string | null;
+  /** Auto-upload finished recordings and copy the share link. */
+  autoUpload: boolean;
+}
+
 export interface AppSettings {
   recording: RecordingSettings;
   camera: CameraOverlay;
@@ -222,6 +230,7 @@ export interface AppSettings {
    * Drawing, Settings, Quit). Off by default; macOS-only.
    */
   menuBarIcon: boolean;
+  share: ShareSettings;
 }
 
 /**
@@ -316,4 +325,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     width: 4,
   },
   menuBarIcon: false,
+  share: {
+    pixeldrainApiKey: null,
+    autoUpload: false,
+  },
 };
