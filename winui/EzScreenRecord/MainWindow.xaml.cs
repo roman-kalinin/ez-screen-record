@@ -170,6 +170,9 @@ public sealed partial class MainWindow : Window
         LeftControls.Children.Add(RoundButton(Glyphs.ImageAdd, "Add image overlay",
             async (_, _) => await OnAddImageAsync()));
 
+        LeftControls.Children.Add(RoundButton(Glyphs.Folder, "Open recordings folder",
+            (_, _) => OpenOutputFolder()));
+
         // Only meaningful during a take, matching Electron: drawing over a
         // desktop nobody is recording has no purpose.
         _drawButton = RoundButton(Glyphs.Ink, "Draw on screen (F8)", (_, _) => ToggleDrawing());

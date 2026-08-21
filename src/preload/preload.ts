@@ -126,6 +126,8 @@ const api = {
     ipcRenderer.invoke('system:appearance'),
   revealFile: (p: string) => ipcRenderer.invoke('shell:revealFile', p),
   openPath: (p: string) => ipcRenderer.invoke('shell:openPath', p),
+  /** Open the recordings output folder in the OS file manager. */
+  openOutputFolder: (): Promise<string> => ipcRenderer.invoke('shell:openOutputDir'),
 
   /** Subscribe to a main->renderer channel. Returns an unsubscribe function.
    *  The braces matter: removeListener is chainable, and returning its value

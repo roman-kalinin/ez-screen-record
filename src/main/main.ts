@@ -1132,6 +1132,15 @@ function registerIpc() {
 
   ipcMain.handle('shell:openPath', (_e, p: string) => shell.openPath(p));
 
+  // Open the recordings folder in the OS file manager. Resolves the saved
+  // output dir (falling back to the default) and ensures it exists first, so
+  // this works even before the first recording has created the folder.
+  ipcMain.handle('shell:openOutputDir', () => {
+    const dir = loadSettings().recording.outputDir || defaultOutputDir();
+    fs.mkdirSync(dir, { recursive: true });
+    return shell.openPath(dir);
+  });
+
   ipcMain.handle('paths:defaultOutputDir', () => defaultOutputDir());
 
   // The running build's version, so an installed copy can identify itself.

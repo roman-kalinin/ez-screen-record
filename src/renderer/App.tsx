@@ -1562,6 +1562,16 @@ export function App() {
           </button>
         </Tooltip>
 
+        <Tooltip content="Open recordings folder" relationship="label" withArrow>
+          <button
+            className={s.roundBtn}
+            aria-label="Open recordings folder"
+            onClick={() => void window.ez.openOutputFolder()}
+          >
+            <FolderOpenRegular fontSize={20} />
+          </button>
+        </Tooltip>
+
         {/* Drawing only appears once a take is running. */}
         {busy && state !== 'countdown' && (
           <Tooltip content="Draw on screen (Ctrl+Shift+D)" relationship="label" withArrow>
