@@ -31,6 +31,9 @@ import {
   listDshowDevices,
   type NativeCameraOptions,
 } from './native-recorder';
+import { enableDnd, disableDnd, restoreDndOnLaunch } from './dnd';
+import { uploadAndShare } from './gofile';
+import { randomUUID } from 'crypto';
 
 const isDev = process.env.NODE_ENV === 'development';
 const DEV_SERVER = 'http://localhost:5273';
@@ -715,6 +718,21 @@ function registerIpc() {
     return true;
   });
 
+  // --- Do Not Disturb while recording --------------------------------------
+  // The renderer owns the take (the browser engine records there), so it signals
+  // the real start/stop of capture. enable is called only when the setting is on;
+  // disable is always safe — it no-ops unless a prior enable actually changed DND.
+  ipcMain.handle('dnd:enable', async () => {
+    await enableDnd((message) => {
+      controlWindow?.webContents.send('dnd:hint', message);
+    });
+    return true;
+  });
+  ipcMain.handle('dnd:disable', async () => {
+    await disableDnd();
+    return true;
+  });
+
   // --- Overlay control -----------------------------------------------------
   ipcMain.handle('overlay:show', () => {
     const win = createOverlayWindow();
@@ -902,6 +920,29 @@ function registerIpc() {
       }
     },
   );
+
+  // --- Share (GoFile upload) -----------------------------------------------
+  /**
+   * Stream a finished recording to GoFile and return a shareable link.
+   *
+   * The local file is never touched, so a failed upload can never lose the
+   * recording. GoFile uploads are anonymous — no key or account. Progress is
+   * streamed back on 'share:uploadProgress' as bytes are sent.
+   */
+  ipcMain.handle('share:upload', async (event, filePath: string) => {
+    const uploadId = randomUUID();
+    try {
+      const { viewUrl } = await uploadAndShare(filePath, uploadId, (p) => {
+        // The renderer window may have gone away mid-upload; don't send to it.
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('share:uploadProgress', p);
+        }
+      });
+      return { ok: true, viewUrl };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  });
 
   // --- Native (crisp) capture ---------------------------------------------
   ipcMain.handle('native:available', () => NativeRecorder.isAvailable());
@@ -1278,6 +1319,9 @@ if (!gotLock) {
     // Screen recording is deliberately not prompted at launch — it is asked for
     // when a recording is actually started. No-op on Windows.
     void primePermissions();
+
+    // If a prior run crashed mid-recording with DND on, put it back now.
+    void restoreDndOnLaunch();
 
     createControlWindow();
     createOverlayWindow();

@@ -1,3 +1,4 @@
+using EzScreenRecord.Interop;
 using EzScreenRecord.Models;
 using Microsoft.UI.Xaml;
 
@@ -23,6 +24,9 @@ public partial class App : Application
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         Settings = AppSettings.Load();
+
+        // If a prior run crashed mid-recording with DND on, restore it now.
+        DoNotDisturb.RestoreOnLaunch();
 
         // Self-test. Opens a real window and reports each check as it runs, so
         // progress is visible rather than a silent process that cannot be told

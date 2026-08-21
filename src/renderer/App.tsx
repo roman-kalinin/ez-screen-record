@@ -22,7 +22,9 @@ import {
   Toast,
   ToastTitle,
   ToastBody,
+  ToastFooter,
   ToastTrigger,
+  ProgressBar,
   useId,
   Link,
   Divider,
@@ -50,8 +52,10 @@ import {
   MicOffRegular,
   DesktopRegular,
   QuestionRegular,
+  CloudArrowUpRegular,
 } from '@fluentui/react-icons';
 import { LayoutStage } from './components/LayoutStage';
+import { ShareSettings } from './components/ShareSettings';
 import { PillControl } from './components/PillControl';
 import { SourceDialog } from './components/SourceDialog';
 import { ScreenRecorder } from './lib/recorder';
@@ -324,7 +328,7 @@ function formatTime(ms: number): string {
 export function App() {
   const s = useStyles();
   const toasterId = useId('toaster');
-  const { dispatchToast } = useToastController(toasterId);
+  const { dispatchToast, updateToast, dismissToast } = useToastController(toasterId);
 
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [loaded, setLoaded] = useState(false);
@@ -360,6 +364,14 @@ export function App() {
 
   const recorderRef = useRef(new ScreenRecorder());
   const fileInputRef = useRef<HTMLInputElement>(null);
+  /**
+   * The single in-flight upload's progress toast. Progress arrives on a
+   * main->renderer channel (see the share:uploadProgress effect) and has to
+   * find the toast to update; keying it through this ref keeps one live upload
+   * addressable without threading the id through every render.
+   */
+  const activeShareToastRef = useRef<string | null>(null);
+  const shareProgressRef = useRef<{ uploaded: number; total: number }>({ uploaded: 0, total: 0 });
   // Mirror state into refs so global hotkey handlers always see current values.
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -438,6 +450,156 @@ export function App() {
       );
     },
     [dispatchToast],
+  );
+
+  // --- Share (GoFile upload) -------------------------------------------------
+  /**
+   * Upload a finished recording to GoFile and surface the shareable link.
+   *
+   * Never throws and never blocks recording: the local file is untouched, so a
+   * failed upload only costs a toast. A persistent progress toast tracks the
+   * byte count pushed from main (see the share:uploadProgress effect), then is
+   * dismissed and replaced by a success toast whose body is the clickable link
+   * (already copied to the clipboard by main; the footer re-copies on demand).
+   */
+  const uploadToShare = useCallback(
+    async (filePath: string) => {
+      const toastId = `share-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      activeShareToastRef.current = toastId;
+      shareProgressRef.current = { uploaded: 0, total: 0 };
+
+      dispatchToast(
+        <Toast>
+          <ToastTitle>Uploading share link…</ToastTitle>
+          <ToastBody>
+            <ProgressBar />
+          </ToastBody>
+        </Toast>,
+        // Persistent: the resolved result dismisses it explicitly.
+        { toastId, intent: 'info', timeout: -1 },
+      );
+
+      try {
+        const res = await window.ez.share.upload(filePath);
+        dismissToast(toastId);
+        activeShareToastRef.current = null;
+
+        if (res.ok && res.viewUrl) {
+          const url = res.viewUrl;
+          dispatchToast(
+            <Toast>
+              <ToastTitle
+                action={
+                  <ToastTrigger>
+                    <Button
+                      appearance="subtle"
+                      size="small"
+                      icon={<DismissRegular />}
+                      aria-label="Dismiss"
+                    />
+                  </ToastTrigger>
+                }
+              >
+                Uploaded — link copied
+              </ToastTitle>
+              <ToastBody>
+                <Link href={url} target="_blank" rel="noreferrer">
+                  {url}
+                </Link>
+              </ToastBody>
+              <ToastFooter>
+                <Link onClick={() => void navigator.clipboard.writeText(url)}>Copy link</Link>
+              </ToastFooter>
+            </Toast>,
+            { intent: 'success', timeout: 15000 },
+          );
+        } else {
+          notify('Could not upload recording', res.error, 'error');
+        }
+      } catch (err) {
+        dismissToast(toastId);
+        activeShareToastRef.current = null;
+        notify('Could not upload recording', (err as Error).message, 'error');
+      }
+    },
+    [dispatchToast, dismissToast, notify],
+  );
+
+  /**
+   * The "Recording saved" toast, shared by both save paths (browser and
+   * ffmpeg). Always offers an "Upload & share link" action — GoFile works
+   * anonymously, so there is nothing to gate on — and kicks the upload off
+   * itself when auto-upload is on.
+   */
+  const savedRecordingToast = useCallback(
+    (filePath: string) => {
+      dispatchToast(
+        <Toast>
+          <ToastTitle
+            action={
+              <ToastTrigger>
+                <Button
+                  appearance="subtle"
+                  size="small"
+                  icon={<DismissRegular />}
+                  aria-label="Dismiss"
+                />
+              </ToastTrigger>
+            }
+          >
+            Recording saved
+          </ToastTitle>
+          <ToastBody>
+            <Link onClick={() => window.ez.revealFile(filePath)}>Show in folder</Link>
+          </ToastBody>
+          <ToastFooter>
+            <Link
+              onClick={() => void uploadToShare(filePath)}
+              // Icon in front of the label, matching the transport controls.
+            >
+              <CloudArrowUpRegular style={{ marginRight: 4, verticalAlign: 'text-bottom' }} />
+              Upload &amp; share link
+            </Link>
+          </ToastFooter>
+        </Toast>,
+        { intent: 'success', timeout: 10000 },
+      );
+
+      if (settingsRef.current.share.autoUpload) {
+        void uploadToShare(filePath);
+      }
+    },
+    [dispatchToast, uploadToShare],
+  );
+
+  // Push upload progress from main into the live progress toast. 'done'/'error'
+  // are ignored — the resolved upload() result handles those transitions.
+  useEffect(
+    () =>
+      window.ez.on(
+        'share:uploadProgress',
+        (p: { uploaded: number; total: number; phase: string }) => {
+          const toastId = activeShareToastRef.current;
+          if (!toastId) return;
+          if (p.phase !== 'uploading' && p.phase !== 'starting') return;
+          shareProgressRef.current = { uploaded: p.uploaded, total: p.total };
+          const value = p.total > 0 ? Math.min(1, p.uploaded / p.total) : 0;
+          updateToast({
+            toastId,
+            content: (
+              <Toast>
+                <ToastTitle>Uploading share link…</ToastTitle>
+                <ToastBody>
+                  <ProgressBar value={value} max={1} />
+                </ToastBody>
+              </Toast>
+            ),
+            intent: 'info',
+            timeout: -1,
+          });
+        },
+      ),
+    [updateToast],
   );
 
   // --- Load persisted settings + enumerate devices ---------------------------
@@ -541,29 +703,7 @@ export function App() {
           settingsRef.current.recording.outputDir,
         );
         if (res.ok && res.filePath) {
-          const p = res.filePath;
-          dispatchToast(
-            <Toast>
-              <ToastTitle
-                action={
-                  <ToastTrigger>
-                    <Button
-                      appearance="subtle"
-                      size="small"
-                      icon={<DismissRegular />}
-                      aria-label="Dismiss"
-                    />
-                  </ToastTrigger>
-                }
-              >
-                Recording saved
-              </ToastTitle>
-              <ToastBody>
-                <Link onClick={() => window.ez.revealFile(p)}>Show in folder</Link>
-              </ToastBody>
-            </Toast>,
-            { intent: 'success', timeout: 10000 },
-          );
+          savedRecordingToast(res.filePath);
         } else {
           notify('Could not save recording', res.error, 'error');
         }
@@ -574,6 +714,8 @@ export function App() {
         // path does this inline in stopRecording; the browser path finishes
         // asynchronously here, so without it the main window stayed hidden
         // behind a toolbar for a take that had already ended.
+        // Restore notifications (no-op unless DND was actually engaged).
+        void window.ez.dnd.disable();
         if (onScreenCameraRef.current) {
           onScreenCameraRef.current = false;
           void window.ez.cameraOverlay.hide();
@@ -584,7 +726,7 @@ export function App() {
         setElapsed(0);
       }
     },
-    [notify, dispatchToast],
+    [notify, savedRecordingToast],
   );
 
   const pushToolbarState = useCallback(() => {
@@ -833,6 +975,8 @@ export function App() {
       lastNativeMicRef.current = `${cfg.micEnabled}:${cfg.micDeviceId ?? ''}`;
       stateRef.current = 'recording';
       setState('recording');
+      // Capture has genuinely begun — silence notifications if the user asked.
+      if (cfg.doNotDisturbWhileRecording) void window.ez.dnd.enable();
       // Take the toolbar out of "Starting…" — it has no other way to know.
       pushToolbarState();
       return;
@@ -857,12 +1001,15 @@ export function App() {
         onStop: finishRecording,
         onError: (e) => {
           notify('Recording error', e.message, 'error');
+          void window.ez.dnd.disable();
           void window.ez.window.setToolbarMode(false);
           setState('idle');
         },
       });
       stateRef.current = 'recording';
       setState('recording');
+      // Capture has genuinely begun — silence notifications if the user asked.
+      if (settingsRef.current.recording.doNotDisturbWhileRecording) void window.ez.dnd.enable();
       pushToolbarState();
     } catch (err) {
       stateRef.current = 'idle';
@@ -934,34 +1081,14 @@ export function App() {
       lastNativeSourceRef.current = null;
       lastNativeMicRef.current = null;
       if (res.ok && res.filePath) {
-        const p = res.filePath;
-        dispatchToast(
-          <Toast>
-            <ToastTitle
-              action={
-                <ToastTrigger>
-                  <Button
-                    appearance="subtle"
-                    size="small"
-                    icon={<DismissRegular />}
-                    aria-label="Dismiss"
-                  />
-                </ToastTrigger>
-              }
-            >
-              Recording saved
-            </ToastTitle>
-            <ToastBody>
-              <Link onClick={() => window.ez.revealFile(p)}>Show in folder</Link>
-            </ToastBody>
-          </Toast>,
-          { intent: 'success', timeout: 10000 },
-        );
+        savedRecordingToast(res.filePath);
       } else {
         notify('Could not save recording', res.error, 'error');
       }
       // ffmpeg has exited; take the bubble down and put the window back.
       setCaptureSuspended(false);
+      // Restore notifications (no-op unless DND was actually engaged).
+      void window.ez.dnd.disable();
       if (onScreenCameraRef.current) {
         onScreenCameraRef.current = false;
         void window.ez.cameraOverlay.hide();
@@ -981,7 +1108,7 @@ export function App() {
     setState('saving');
     pushToolbarState();
     recorderRef.current.stop();
-  }, [dispatchToast, notify, pushToolbarState]);
+  }, [savedRecordingToast, notify, pushToolbarState]);
 
   const togglePause = useCallback(async () => {
     let next: RecordingState;
@@ -1190,6 +1317,13 @@ export function App() {
 
   // Main reports any shortcut another app already owns.
   useEffect(() => window.ez.on('hotkeyConflict', (list: string[]) => setHotkeyConflicts(list)), []);
+
+  // macOS: the Do-Not-Disturb Shortcut is missing, so DND could not engage.
+  // Surface the one-time setup hint main sent rather than dropping it.
+  useEffect(
+    () => window.ez.on('dnd:hint', (message: string) => notify('Do Not Disturb', message, 'warning')),
+    [],
+  );
 
   // Is the high-quality ffmpeg path usable on this machine?
   useEffect(() => {
@@ -1791,6 +1925,24 @@ export function App() {
                   : 'The toolbar is recorded along with everything else on screen.'}
               </Text>
 
+              <Switch
+                checked={settings.recording.doNotDisturbWhileRecording}
+                label="Do not disturb while recording"
+                onChange={(_e, d) =>
+                  setSettings((p) => ({
+                    ...p,
+                    recording: { ...p.recording, doNotDisturbWhileRecording: d.checked },
+                  }))
+                }
+              />
+              <Text size={100} style={{ color: tokens.colorNeutralForeground3, marginTop: '-4px' }}>
+                {isMac
+                  ? 'Runs a Do Not Disturb Shortcut when a take starts and turns it off when it stops. ' +
+                    'Create two Shortcuts named "Ez Screen Record — DND On" and "Ez Screen Record — DND Off" ' +
+                    '(each a single "Set Focus → Do Not Disturb" action, On and Off) for this to work.'
+                  : 'Silences Windows notifications while recording and restores your previous setting when the take ends.'}
+              </Text>
+
               {isMac && (
                 <>
                   <Switch
@@ -1843,6 +1995,9 @@ export function App() {
                 </Button>
               </div>
 
+              <Divider />
+
+              <ShareSettings share={settings.share} setSettings={setSettings} />
 
               {/* Which build this is. Every installer carries its version in
                   the filename, but once installed there was no way to tell

@@ -43,6 +43,8 @@ public sealed partial class MainWindow
             HideToolbar();
             HideCameraBubble();
             CloseOverlay();
+            // Restore notifications after an unexpected ffmpeg death.
+            DoNotDisturb.Disable();
             // Otherwise the loopback graph outlives the take and keeps writing.
             await StopSystemAudioAsync();
             SetState(RecordingState.Idle);
@@ -391,6 +393,10 @@ public sealed partial class MainWindow
         // The preview holds the camera and screen; ffmpeg needs them free.
         _stage?.StopPreviews();
 
+        // Silence notifications the instant before capture begins, so banners are
+        // already gone from the first frame. Best-effort; never blocks the take.
+        if (Settings.Recording.DoNotDisturbWhileRecording) DoNotDisturb.Enable();
+
         try
         {
             await _recorder.StartAsync(options);
@@ -399,6 +405,8 @@ public sealed partial class MainWindow
         {
             HideToolbar();
             HideCameraBubble();
+            // Capture never started — put notifications back.
+            DoNotDisturb.Disable();
 
             // The audio graph was started before ffmpeg. Left running it
             // captures the desktop for the rest of the app's lifetime, writing
@@ -512,6 +520,8 @@ public sealed partial class MainWindow
             HideToolbar();
             HideCameraBubble();
             CloseOverlay();
+            // Restore notifications (no-op unless DND was actually engaged).
+            DoNotDisturb.Disable();
             SetState(RecordingState.Idle);
             ElapsedLabel.Text = "00:00";
             _ = _stage?.StartPreviewsAsync();

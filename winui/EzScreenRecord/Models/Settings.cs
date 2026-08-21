@@ -115,6 +115,15 @@ public sealed class RecordingSettings
     /// while recording.
     /// </summary>
     public bool HideToolbarFromCapture { get; set; } = true;
+
+    /// <summary>
+    /// Silence Windows notifications while a take is actually recording, and
+    /// restore the user's prior setting when it stops. Off by default.
+    ///
+    /// Flips the global toast setting in the registry; crash-safe via a small
+    /// state file, so a run that dies mid-take is restored on next launch.
+    /// </summary>
+    public bool DoNotDisturbWhileRecording { get; set; }
 }
 
 public sealed class AppSettings

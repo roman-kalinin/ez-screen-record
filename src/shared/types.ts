@@ -144,6 +144,13 @@ export interface RecordingSettings {
    * why this is a setting rather than always-on.
    */
   hideToolbarFromCapture: boolean;
+  /**
+   * Silence OS notifications while a take is actually recording, restoring the
+   * user's prior state when it stops. Off by default. On Windows this flips the
+   * global toast setting; on macOS it runs a user-created "Do Not Disturb"
+   * Shortcut. Crash-safe: a run that dies mid-take is restored on next launch.
+   */
+  doNotDisturbWhileRecording: boolean;
 }
 
 /**
@@ -212,6 +219,12 @@ export function bitrateFor(height: number, fps: number): number {
   return Math.round(Math.min(Math.max(raw, 8_000_000), 200_000_000));
 }
 
+/** One-click share of a finished recording via GoFile. Anonymous, no account. */
+export interface ShareSettings {
+  /** Auto-upload finished recordings and copy the share link. */
+  autoUpload: boolean;
+}
+
 export interface AppSettings {
   recording: RecordingSettings;
   camera: CameraOverlay;
@@ -222,6 +235,7 @@ export interface AppSettings {
    * Drawing, Settings, Quit). Off by default; macOS-only.
    */
   menuBarIcon: boolean;
+  share: ShareSettings;
 }
 
 /**
@@ -297,6 +311,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     quality: 'high',
     outputDir: null,
     hideToolbarFromCapture: true,
+    doNotDisturbWhileRecording: false,
   },
   camera: {
     enabled: true,
@@ -316,4 +331,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     width: 4,
   },
   menuBarIcon: false,
+  share: {
+    autoUpload: false,
+  },
 };
