@@ -144,6 +144,13 @@ export interface RecordingSettings {
    * why this is a setting rather than always-on.
    */
   hideToolbarFromCapture: boolean;
+  /**
+   * Silence OS notifications while a take is actually recording, restoring the
+   * user's prior state when it stops. Off by default. On Windows this flips the
+   * global toast setting; on macOS it runs a user-created "Do Not Disturb"
+   * Shortcut. Crash-safe: a run that dies mid-take is restored on next launch.
+   */
+  doNotDisturbWhileRecording: boolean;
 }
 
 /**
@@ -297,6 +304,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     quality: 'high',
     outputDir: null,
     hideToolbarFromCapture: true,
+    doNotDisturbWhileRecording: false,
   },
   camera: {
     enabled: true,

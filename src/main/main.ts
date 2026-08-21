@@ -31,6 +31,7 @@ import {
   listDshowDevices,
   type NativeCameraOptions,
 } from './native-recorder';
+import { enableDnd, disableDnd, restoreDndOnLaunch } from './dnd';
 
 const isDev = process.env.NODE_ENV === 'development';
 const DEV_SERVER = 'http://localhost:5273';
@@ -715,6 +716,21 @@ function registerIpc() {
     return true;
   });
 
+  // --- Do Not Disturb while recording --------------------------------------
+  // The renderer owns the take (the browser engine records there), so it signals
+  // the real start/stop of capture. enable is called only when the setting is on;
+  // disable is always safe — it no-ops unless a prior enable actually changed DND.
+  ipcMain.handle('dnd:enable', async () => {
+    await enableDnd((message) => {
+      controlWindow?.webContents.send('dnd:hint', message);
+    });
+    return true;
+  });
+  ipcMain.handle('dnd:disable', async () => {
+    await disableDnd();
+    return true;
+  });
+
   // --- Overlay control -----------------------------------------------------
   ipcMain.handle('overlay:show', () => {
     const win = createOverlayWindow();
@@ -1269,6 +1285,9 @@ if (!gotLock) {
     // Screen recording is deliberately not prompted at launch — it is asked for
     // when a recording is actually started. No-op on Windows.
     void primePermissions();
+
+    // If a prior run crashed mid-recording with DND on, put it back now.
+    void restoreDndOnLaunch();
 
     createControlWindow();
     createOverlayWindow();

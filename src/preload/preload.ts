@@ -117,6 +117,16 @@ const api = {
       ipcRenderer.invoke('native:resume'),
   },
 
+  /**
+   * Do Not Disturb while recording. enable() is called by the renderer at the
+   * real start of a take (guarded by the setting); disable() at stop. Both are
+   * best-effort in the main process and never block recording.
+   */
+  dnd: {
+    enable: (): Promise<boolean> => ipcRenderer.invoke('dnd:enable'),
+    disable: (): Promise<boolean> => ipcRenderer.invoke('dnd:disable'),
+  },
+
   chooseOutputDir: (): Promise<string | null> => ipcRenderer.invoke('dialog:chooseOutputDir'),
   defaultOutputDir: (): Promise<string> => ipcRenderer.invoke('paths:defaultOutputDir'),
   /** Version of the running build, e.g. "1.1.0". */

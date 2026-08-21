@@ -120,6 +120,23 @@ public sealed partial class MainWindow
 
         panel.Children.Add(new MenuFlyoutSeparator());
 
+        var doNotDisturb = new ToggleSwitch
+        {
+            Header = "Do not disturb while recording",
+            IsOn = Settings.Recording.DoNotDisturbWhileRecording,
+        };
+        doNotDisturb.Toggled += (_, _) =>
+        {
+            Settings.Recording.DoNotDisturbWhileRecording = doNotDisturb.IsOn;
+            Settings.Save();
+        };
+        panel.Children.Add(doNotDisturb);
+        panel.Children.Add(Caption(
+            "Silences Windows notifications while a take is recording and restores " +
+            "your previous setting when it stops."));
+
+        panel.Children.Add(new MenuFlyoutSeparator());
+
         // State what the recorder cannot do, rather than leaving the gap for
         // the user to discover in a finished file.
         panel.Children.Add(Heading("Not yet supported"));

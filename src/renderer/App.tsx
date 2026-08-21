@@ -574,6 +574,8 @@ export function App() {
         // path does this inline in stopRecording; the browser path finishes
         // asynchronously here, so without it the main window stayed hidden
         // behind a toolbar for a take that had already ended.
+        // Restore notifications (no-op unless DND was actually engaged).
+        void window.ez.dnd.disable();
         if (onScreenCameraRef.current) {
           onScreenCameraRef.current = false;
           void window.ez.cameraOverlay.hide();
@@ -833,6 +835,8 @@ export function App() {
       lastNativeMicRef.current = `${cfg.micEnabled}:${cfg.micDeviceId ?? ''}`;
       stateRef.current = 'recording';
       setState('recording');
+      // Capture has genuinely begun — silence notifications if the user asked.
+      if (cfg.doNotDisturbWhileRecording) void window.ez.dnd.enable();
       // Take the toolbar out of "Starting…" — it has no other way to know.
       pushToolbarState();
       return;
@@ -857,12 +861,15 @@ export function App() {
         onStop: finishRecording,
         onError: (e) => {
           notify('Recording error', e.message, 'error');
+          void window.ez.dnd.disable();
           void window.ez.window.setToolbarMode(false);
           setState('idle');
         },
       });
       stateRef.current = 'recording';
       setState('recording');
+      // Capture has genuinely begun — silence notifications if the user asked.
+      if (settingsRef.current.recording.doNotDisturbWhileRecording) void window.ez.dnd.enable();
       pushToolbarState();
     } catch (err) {
       stateRef.current = 'idle';
@@ -962,6 +969,8 @@ export function App() {
       }
       // ffmpeg has exited; take the bubble down and put the window back.
       setCaptureSuspended(false);
+      // Restore notifications (no-op unless DND was actually engaged).
+      void window.ez.dnd.disable();
       if (onScreenCameraRef.current) {
         onScreenCameraRef.current = false;
         void window.ez.cameraOverlay.hide();
@@ -1190,6 +1199,13 @@ export function App() {
 
   // Main reports any shortcut another app already owns.
   useEffect(() => window.ez.on('hotkeyConflict', (list: string[]) => setHotkeyConflicts(list)), []);
+
+  // macOS: the Do-Not-Disturb Shortcut is missing, so DND could not engage.
+  // Surface the one-time setup hint main sent rather than dropping it.
+  useEffect(
+    () => window.ez.on('dnd:hint', (message: string) => notify('Do Not Disturb', message, 'warning')),
+    [],
+  );
 
   // Is the high-quality ffmpeg path usable on this machine?
   useEffect(() => {
@@ -1779,6 +1795,24 @@ export function App() {
                 {settings.recording.hideToolbarFromCapture
                   ? 'The toolbar stays visible to you but never appears in the video. It is also hidden from Zoom and Teams shares while recording.'
                   : 'The toolbar is recorded along with everything else on screen.'}
+              </Text>
+
+              <Switch
+                checked={settings.recording.doNotDisturbWhileRecording}
+                label="Do not disturb while recording"
+                onChange={(_e, d) =>
+                  setSettings((p) => ({
+                    ...p,
+                    recording: { ...p.recording, doNotDisturbWhileRecording: d.checked },
+                  }))
+                }
+              />
+              <Text size={100} style={{ color: tokens.colorNeutralForeground3, marginTop: '-4px' }}>
+                {isMac
+                  ? 'Runs a Do Not Disturb Shortcut when a take starts and turns it off when it stops. ' +
+                    'Create two Shortcuts named "Ez Screen Record — DND On" and "Ez Screen Record — DND Off" ' +
+                    '(each a single "Set Focus → Do Not Disturb" action, On and Off) for this to work.'
+                  : 'Silences Windows notifications while recording and restores your previous setting when the take ends.'}
               </Text>
 
               {isMac && (
