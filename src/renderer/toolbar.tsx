@@ -24,6 +24,8 @@ import {
   VideoRegular,
   VideoOffRegular,
   DesktopRegular,
+  Speaker2Regular,
+  SpeakerOffRegular,
   ReOrderDotsVerticalRegular,
 } from '@fluentui/react-icons';
 import { PillControl } from './components/PillControl';
@@ -141,6 +143,17 @@ const useStyles = makeStyles({
     background: tokens.colorBrandBackground,
     color: tokens.colorNeutralForegroundOnBrand,
   },
+  // "off" reads as a muted-red state, matching the mic/camera pill treatment.
+  roundBtnOff: {
+    background: '#c42b1c',
+    color: '#fff',
+    ':hover': { background: '#d13a2b' },
+  },
+  // Shown-but-locked: the ffmpeg engine cannot toggle desktop audio mid-take.
+  roundBtnDisabled: {
+    opacity: 0.4,
+    cursor: 'not-allowed',
+  },
   stopBtn: {
     width: '58px',
     height: '40px',
@@ -193,6 +206,15 @@ interface ToolbarState {
   cameraEnabled: boolean;
   cameraDeviceId: string | null;
   cams: MediaDevice[];
+  /** Whether desktop (computer) audio is being recorded. */
+  systemAudioEnabled: boolean;
+  /**
+   * Whether desktop audio can be toggled mid-take. Only the browser engine can
+   * re-plumb its live audio graph; the ffmpeg engine records it as a single
+   * lockstep track, so the control is shown but disabled there. Optional so a
+   * mid-take state push that omits it is treated as "allowed".
+   */
+  canToggleSystemAudio?: boolean;
   sourceName: string;
   /**
    * Whether the engine recording this take can pause at all. The ffmpeg path
@@ -350,6 +372,39 @@ function Toolbar() {
           selectedId={st.cameraDeviceId}
           onSelect={(id) => send('toolbar:setCameraDevice', id)}
         />
+
+        {(() => {
+          // The ffmpeg engine records desktop audio as one lockstep track that
+          // can't gain or lose an input mid-take, so the control is shown for
+          // consistency but locked, with a tooltip that says why.
+          const locked = st.canToggleSystemAudio === false;
+          const on = st.systemAudioEnabled;
+          const tip = locked
+            ? `Computer audio ${on ? 'on' : 'off'} — set before recording`
+            : on
+              ? 'Computer audio on — click to exclude it'
+              : 'Computer audio off — click to include it';
+          return (
+            <Tooltip
+              content={tip}
+              relationship="label"
+              withArrow
+              onVisibleChange={(_e, d) => holdInteractive(d.visible)}
+            >
+              <button
+                className={`${s.roundBtn} ${!on ? s.roundBtnOff : ''} ${
+                  locked ? s.roundBtnDisabled : ''
+                }`}
+                onClick={() => !locked && send('toolbar:setSystemAudioEnabled', !on)}
+                disabled={locked}
+                aria-label={on ? 'Exclude computer audio' : 'Include computer audio'}
+                aria-pressed={on}
+              >
+                {on ? <Speaker2Regular fontSize={20} /> : <SpeakerOffRegular fontSize={20} />}
+              </button>
+            </Tooltip>
+          );
+        })()}
 
         <Tooltip
           content={st.sourceName ? `Recording: ${st.sourceName}` : 'Change source'}

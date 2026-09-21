@@ -114,9 +114,12 @@ export class ScreenRecorder {
   private acquiringCamera = false;
   private swappingScreen = false;
   private swappingMic = false;
+  private swappingSystemAudio = false;
   /** Kept so the mic can be swapped without rebuilding the audio graph. */
   private audioDest: MediaStreamAudioDestinationNode | null = null;
   private micSourceNode: MediaStreamAudioSourceNode | null = null;
+  /** Kept so desktop audio can be toggled without rebuilding the graph. */
+  private systemSourceNode: MediaStreamAudioSourceNode | null = null;
   /** Bumped per updateImages call so a slow decode can't overwrite newer state. */
   private imagesToken = 0;
   private imageCache = new Map<string, HTMLImageElement>();
@@ -460,6 +463,47 @@ export class ScreenRecorder {
     }
   }
 
+  /**
+   * Add or drop desktop (system) audio mid-take, by re-plumbing the live
+   * WebAudio graph — the same technique updateMicrophone uses. Enabling
+   * requests a fresh loopback stream (getDisplayMedia answered with
+   * `audio: 'loopback'` by main) and connects it; disabling disconnects and
+   * stops it. A no-op if the graph was never built (e.g. capture not running).
+   */
+  async updateSystemAudio(enabled: boolean): Promise<void> {
+    if (!this.audioContext || !this.audioDest) return;
+    if (this.swappingSystemAudio) return;
+    // Already in the requested state — avoid a needless permission round trip.
+    if (enabled === Boolean(this.systemSourceNode)) return;
+
+    this.swappingSystemAudio = true;
+    try {
+      // Detach whatever desktop audio is currently in the mix.
+      this.systemSourceNode?.disconnect();
+      this.systemSourceNode = null;
+      this.systemStream?.getTracks().forEach((t) => t.stop());
+      this.systemStream = null;
+
+      if (!enabled) return;
+
+      const sys = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true });
+      // We only want the audio; drop the video track the handler paired with it.
+      sys.getVideoTracks().forEach((t) => t.stop());
+      if (!sys.getAudioTracks().length) {
+        sys.getTracks().forEach((t) => t.stop());
+        console.warn('[recorder] system audio requested but no loopback track was granted');
+        return;
+      }
+      this.systemStream = sys;
+      this.systemSourceNode = this.audioContext.createMediaStreamSource(sys);
+      this.systemSourceNode.connect(this.audioDest);
+    } catch (err) {
+      console.warn('[recorder] could not toggle system audio', err);
+    } finally {
+      this.swappingSystemAudio = false;
+    }
+  }
+
   async updateImages(images: ImageOverlay[]): Promise<void> {
     const token = ++this.imagesToken;
     const loaded = await this.loadImages(images.filter((i) => i.visible));
@@ -612,8 +656,10 @@ export class ScreenRecorder {
       const gain = this.audioContext.createGain();
       gain.gain.value = 1;
       src.connect(gain).connect(dest);
-      // Remember the mic node specifically so it can be swapped later.
+      // Remember the mic and system nodes so each can be toggled later without
+      // rebuilding the graph.
       if (stream === this.micStream) this.micSourceNode = src;
+      if (stream === this.systemStream) this.systemSourceNode = src;
     }
 
     return dest.stream.getAudioTracks()[0] ?? null;
