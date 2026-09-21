@@ -25,6 +25,8 @@ import {
   VideoOffRegular,
   DesktopRegular,
   ReOrderDotsVerticalRegular,
+  ChevronRightRegular,
+  ChevronLeftRegular,
 } from '@fluentui/react-icons';
 import { PillControl } from './components/PillControl';
 import { buildTheme, DEFAULT_ACCENT } from './theme';
@@ -172,6 +174,24 @@ const useStyles = makeStyles({
     background: 'rgba(255,255,255,0.16)',
     flexShrink: 0,
   },
+  /**
+   * The expand/collapse handle. Slim and low-contrast so it reads as chrome,
+   * not another control competing with pause/stop.
+   */
+  expander: {
+    display: 'grid',
+    placeItems: 'center',
+    width: '22px',
+    height: '32px',
+    border: 'none',
+    background: 'transparent',
+    color: 'rgba(255,255,255,0.55)',
+    cursor: 'pointer',
+    padding: 0,
+    flexShrink: 0,
+    borderRadius: '8px',
+    ':hover': { color: '#fff', background: 'rgba(255,255,255,0.10)' },
+  },
 });
 
 function formatTime(total: number): string {
@@ -211,6 +231,33 @@ function Toolbar() {
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const [dragging, setDragging] = useState(false);
   const dragRef = useRef<{ dx: number; dy: number } | null>(null);
+
+  /**
+   * The bar starts collapsed to a minimal strip — rec dot, timer, pause, stop —
+   * so it sits lightly over the user's content. Hover or the chevron expands it
+   * to reveal the mic/camera/source/draw controls; it re-collapses ~2s after
+   * the pointer leaves, unless a menu it opened is still up.
+   */
+  const [collapsed, setCollapsed] = useState(true);
+  const collapseTimer = useRef<number | null>(null);
+
+  const cancelCollapse = useCallback(() => {
+    if (collapseTimer.current !== null) {
+      window.clearTimeout(collapseTimer.current);
+      collapseTimer.current = null;
+    }
+  }, []);
+
+  /** Arm the idle re-collapse. A no-op while a menu/tooltip holds it open. */
+  const scheduleCollapse = useCallback(() => {
+    cancelCollapse();
+    collapseTimer.current = window.setTimeout(() => setCollapsed(true), 2000);
+  }, [cancelCollapse]);
+
+  const expand = useCallback(() => {
+    cancelCollapse();
+    setCollapsed(false);
+  }, [cancelCollapse]);
 
   const onGripDown = (e: React.PointerEvent) => {
     const bar = barRef.current;
@@ -261,17 +308,25 @@ function Toolbar() {
    * onto a dropdown — making every menu unclickable. Hit-testing the whole
    * document at the pointer instead covers both.
    */
-  const onMouseMove = useCallback((e: MouseEvent) => {
-    const el = document.elementFromPoint(e.clientX, e.clientY);
-    // Fluent renders menus and tooltips into a portal at the document root, so
-    // `[data-ui]` alone would miss them. Anything that is not the transparent
-    // backdrop counts as UI.
-    const overUi = Boolean(
-      el && (el.closest('[data-ui]') || el.closest('[data-portal]') ||
-             el.closest('.fui-MenuPopover') || el.closest('.fui-Tooltip')),
-    );
-    void window.ez.toolbar.setInteractive(overUi);
-  }, []);
+  const onMouseMove = useCallback(
+    (e: MouseEvent) => {
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      // Fluent renders menus and tooltips into a portal at the document root, so
+      // `[data-ui]` alone would miss them. Anything that is not the transparent
+      // backdrop counts as UI.
+      const overUi = Boolean(
+        el && (el.closest('[data-ui]') || el.closest('[data-portal]') ||
+               el.closest('.fui-MenuPopover') || el.closest('.fui-Tooltip')),
+      );
+      void window.ez.toolbar.setInteractive(overUi);
+
+      // Hover expands; leaving arms the idle re-collapse. Reuses the same
+      // hit-test so hovering a dropdown the bar opened keeps it expanded.
+      if (overUi) expand();
+      else scheduleCollapse();
+    },
+    [expand, scheduleCollapse],
+  );
 
   useEffect(() => {
     window.addEventListener('mousemove', onMouseMove);
@@ -279,10 +334,22 @@ function Toolbar() {
   }, [onMouseMove]);
 
   // While a menu is open the pointer may leave the bar entirely; keep input
-  // granted until it closes, or the menu cannot be used.
-  const holdInteractive = useCallback((open: boolean) => {
-    if (open) void window.ez.toolbar.setInteractive(true);
-  }, []);
+  // granted until it closes, or the menu cannot be used. Also hold the bar
+  // expanded for the menu's lifetime, and re-arm the collapse once it closes.
+  const holdInteractive = useCallback(
+    (open: boolean) => {
+      if (open) {
+        void window.ez.toolbar.setInteractive(true);
+        expand();
+      } else {
+        scheduleCollapse();
+      }
+    },
+    [expand, scheduleCollapse],
+  );
+
+  // Clear a pending collapse timer if the component goes away mid-countdown.
+  useEffect(() => cancelCollapse, [cancelCollapse]);
 
   if (!st) return null;
 
@@ -329,52 +396,61 @@ function Toolbar() {
         <div className={`${s.recDot} ${paused ? s.recDotPaused : ''}`} />
         {paused && <Text className={s.pausedBadge}>{heldLabel}</Text>}
 
-        <PillControl
-          label="Microphone"
-          onIcon={<MicRegular />}
-          offIcon={<MicOffRegular />}
-          enabled={st.micEnabled}
-          onToggle={(v) => send('toolbar:setMicEnabled', v)}
-          options={st.mics.map((m) => ({ id: m.deviceId, label: m.label }))}
-          selectedId={st.micDeviceId}
-          onSelect={(id) => send('toolbar:setMicDevice', id)}
-        />
+        {/*
+          Secondary controls. Hidden while collapsed so the bar is just the
+          essentials (rec dot, timer, pause, stop). Saving is terminal — there
+          is nothing left to configure — so they stay hidden then regardless.
+        */}
+        {!collapsed && !saving && (
+          <>
+            <PillControl
+              label="Microphone"
+              onIcon={<MicRegular />}
+              offIcon={<MicOffRegular />}
+              enabled={st.micEnabled}
+              onToggle={(v) => send('toolbar:setMicEnabled', v)}
+              options={st.mics.map((m) => ({ id: m.deviceId, label: m.label }))}
+              selectedId={st.micDeviceId}
+              onSelect={(id) => send('toolbar:setMicDevice', id)}
+            />
 
-        <PillControl
-          label="Camera"
-          onIcon={<VideoRegular />}
-          offIcon={<VideoOffRegular />}
-          enabled={st.cameraEnabled}
-          onToggle={(v) => send('toolbar:setCameraEnabled', v)}
-          options={st.cams.map((c) => ({ id: c.deviceId, label: c.label }))}
-          selectedId={st.cameraDeviceId}
-          onSelect={(id) => send('toolbar:setCameraDevice', id)}
-        />
+            <PillControl
+              label="Camera"
+              onIcon={<VideoRegular />}
+              offIcon={<VideoOffRegular />}
+              enabled={st.cameraEnabled}
+              onToggle={(v) => send('toolbar:setCameraEnabled', v)}
+              options={st.cams.map((c) => ({ id: c.deviceId, label: c.label }))}
+              selectedId={st.cameraDeviceId}
+              onSelect={(id) => send('toolbar:setCameraDevice', id)}
+            />
 
-        <Tooltip
-          content={st.sourceName ? `Recording: ${st.sourceName}` : 'Change source'}
-          relationship="label"
-          withArrow
-          onVisibleChange={(_e, d) => holdInteractive(d.visible)}
-        >
-          <button className={s.roundBtn} onClick={() => send('toolbar:pickSource')}>
-            <DesktopRegular fontSize={20} />
-          </button>
-        </Tooltip>
+            <Tooltip
+              content={st.sourceName ? `Recording: ${st.sourceName}` : 'Change source'}
+              relationship="label"
+              withArrow
+              onVisibleChange={(_e, d) => holdInteractive(d.visible)}
+            >
+              <button className={s.roundBtn} onClick={() => send('toolbar:pickSource')}>
+                <DesktopRegular fontSize={20} />
+              </button>
+            </Tooltip>
 
-        <Tooltip
-          content="Draw on screen (Ctrl+Shift+D)"
-          relationship="label"
-          withArrow
-          onVisibleChange={(_e, d) => holdInteractive(d.visible)}
-        >
-          <button
-            className={`${s.roundBtn} ${st.drawing ? s.roundBtnActive : ''}`}
-            onClick={() => send('toolbar:toggleDraw')}
-          >
-            <InkStrokeRegular fontSize={20} />
-          </button>
-        </Tooltip>
+            <Tooltip
+              content="Draw on screen (Ctrl+Shift+D)"
+              relationship="label"
+              withArrow
+              onVisibleChange={(_e, d) => holdInteractive(d.visible)}
+            >
+              <button
+                className={`${s.roundBtn} ${st.drawing ? s.roundBtnActive : ''}`}
+                onClick={() => send('toolbar:toggleDraw')}
+              >
+                <InkStrokeRegular fontSize={20} />
+              </button>
+            </Tooltip>
+          </>
+        )}
 
         <div className={s.divider} />
 
@@ -425,6 +501,32 @@ function Toolbar() {
             {saving ? <Spinner size="tiny" /> : <StopFilled fontSize={22} />}
           </button>
         </Tooltip>
+
+        {/*
+          Expand/collapse handle, kept at the trailing edge so it never shifts
+          the primary controls. Hidden while saving — nothing left to reveal.
+          Hover already expands via onMouseMove; this is the explicit toggle.
+        */}
+        {!saving && (
+          <Tooltip
+            content={collapsed ? 'Show controls' : 'Hide controls'}
+            relationship="label"
+            withArrow
+          >
+            <button
+              className={s.expander}
+              onClick={() => (collapsed ? expand() : setCollapsed(true))}
+              aria-label={collapsed ? 'Show controls' : 'Hide controls'}
+              aria-expanded={!collapsed}
+            >
+              {collapsed ? (
+                <ChevronRightRegular fontSize={16} />
+              ) : (
+                <ChevronLeftRegular fontSize={16} />
+              )}
+            </button>
+          </Tooltip>
+        )}
       </div>
     </div>
   );
