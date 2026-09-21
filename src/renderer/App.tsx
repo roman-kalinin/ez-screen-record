@@ -739,6 +739,13 @@ export function App() {
       cameraEnabled: settingsRef.current.camera.enabled,
       cameraDeviceId: settingsRef.current.camera.deviceId,
       cams: camsRef.current,
+      systemAudioEnabled: settingsRef.current.recording.systemAudioEnabled,
+      // Only the browser ("overlay") engine can add or drop desktop audio
+      // mid-take, by re-plumbing its live WebAudio graph. The ffmpeg ("crisp")
+      // engine records desktop audio as a single lockstep WAV that cannot gain
+      // or lose an input without a restart, so the pill is shown-but-locked
+      // there. nativeStartRef is true exactly when the crisp engine is running.
+      canToggleSystemAudio: !nativeStartRef.current,
       sourceName:
         sourcesRef.current.find(
           (x) => x.id === settingsRef.current.recording.screenSourceId,
@@ -842,6 +849,15 @@ export function App() {
     state,
     applyNativeReconfigure,
   ]);
+
+  // Live desktop-audio toggle. Only the browser engine can do this mid-take —
+  // it adds or removes the loopback stream from its WebAudio graph. The ffmpeg
+  // engine's toolbar pill is locked (canToggleSystemAudio: false), so this
+  // effect never has real work to do there; the guard keeps it a no-op anyway.
+  useEffect(() => {
+    if (!isActiveTake(state) || nativeStartRef.current) return;
+    void recorderRef.current?.updateSystemAudio(settings.recording.systemAudioEnabled);
+  }, [settings.recording.systemAudioEnabled, state]);
 
 
   const beginRecording = useCallback(async () => {
@@ -1258,6 +1274,8 @@ export function App() {
       cameraEnabled: settings.camera.enabled,
       cameraDeviceId: settings.camera.deviceId,
       cams,
+      systemAudioEnabled: settings.recording.systemAudioEnabled,
+      canToggleSystemAudio: !nativeStartRef.current,
       sourceName: activeSourceName,
     });
   }, [
@@ -1267,6 +1285,7 @@ export function App() {
     settings.recording.micDeviceId,
     settings.camera.enabled,
     settings.camera.deviceId,
+    settings.recording.systemAudioEnabled,
     mics,
     cams,
     activeSourceName,
@@ -1448,6 +1467,9 @@ export function App() {
       ),
       window.ez.on('toolbar:setCameraDevice', (id: string) =>
         setSettings((p) => ({ ...p, camera: { ...p.camera, deviceId: id } })),
+      ),
+      window.ez.on('toolbar:setSystemAudioEnabled', (v: boolean) =>
+        setSettings((p) => ({ ...p, recording: { ...p.recording, systemAudioEnabled: v } })),
       ),
     ];
     return () => offs.forEach((off) => off());
@@ -1923,6 +1945,22 @@ export function App() {
                 {settings.recording.hideToolbarFromCapture
                   ? 'The toolbar stays visible to you but never appears in the video. It is also hidden from Zoom and Teams shares while recording.'
                   : 'The toolbar is recorded along with everything else on screen.'}
+              </Text>
+
+              <Switch
+                checked={settings.recording.systemAudioEnabled}
+                label="Include computer audio in recordings"
+                onChange={(_e, d) =>
+                  setSettings((p) => ({
+                    ...p,
+                    recording: { ...p.recording, systemAudioEnabled: d.checked },
+                  }))
+                }
+              />
+              <Text size={100} style={{ color: tokens.colorNeutralForeground3, marginTop: '-4px' }}>
+                {settings.recording.systemAudioEnabled
+                  ? 'Desktop sound — app audio, notification dings, media — is captured alongside your microphone.'
+                  : 'Only your microphone is recorded; computer audio, including notification sounds, is left out.'}
               </Text>
 
               <Switch

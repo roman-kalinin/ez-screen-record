@@ -24,6 +24,8 @@ import {
   VideoRegular,
   VideoOffRegular,
   DesktopRegular,
+  Speaker2Regular,
+  SpeakerOffRegular,
   ReOrderDotsVerticalRegular,
   ChevronRightRegular,
   ChevronLeftRegular,
@@ -143,6 +145,17 @@ const useStyles = makeStyles({
     background: tokens.colorBrandBackground,
     color: tokens.colorNeutralForegroundOnBrand,
   },
+  // "off" reads as a muted-red state, matching the mic/camera pill treatment.
+  roundBtnOff: {
+    background: '#c42b1c',
+    color: '#fff',
+    ':hover': { background: '#d13a2b' },
+  },
+  // Shown-but-locked: the ffmpeg engine cannot toggle desktop audio mid-take.
+  roundBtnDisabled: {
+    opacity: 0.4,
+    cursor: 'not-allowed',
+  },
   stopBtn: {
     width: '58px',
     height: '40px',
@@ -173,6 +186,36 @@ const useStyles = makeStyles({
     height: '26px',
     background: 'rgba(255,255,255,0.16)',
     flexShrink: 0,
+  },
+  /**
+   * The secondary-controls group, animated open/closed.
+   *
+   * The controls stay mounted so there is something to transition; the group
+   * animates its own width and opacity instead. `max-width` rather than `width`
+   * because the natural width is content-dependent and unknown — a generous
+   * ceiling the real content never reaches lets the flex row size itself while
+   * still giving the transition something to interpolate. overflow:hidden clips
+   * the controls as the group narrows so they slide away rather than wrap.
+   */
+  group: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    overflow: 'hidden',
+    // Animate the same properties the two states differ in. ease-out feels
+    // like the panel settling into place rather than snapping.
+    transition: 'max-width 220ms ease-out, opacity 160ms ease-out',
+  },
+  groupOpen: {
+    maxWidth: '520px',
+    opacity: 1,
+  },
+  groupClosed: {
+    maxWidth: 0,
+    opacity: 0,
+    // Collapse the flex gap too, so a closed group leaves no dead space before
+    // the divider.
+    gap: 0,
   },
   /**
    * The expand/collapse handle. Slim and low-contrast so it reads as chrome,
@@ -213,6 +256,15 @@ interface ToolbarState {
   cameraEnabled: boolean;
   cameraDeviceId: string | null;
   cams: MediaDevice[];
+  /** Whether desktop (computer) audio is being recorded. */
+  systemAudioEnabled: boolean;
+  /**
+   * Whether desktop audio can be toggled mid-take. Only the browser engine can
+   * re-plumb its live audio graph; the ffmpeg engine records it as a single
+   * lockstep track, so the control is shown but disabled there. Optional so a
+   * mid-take state push that omits it is treated as "allowed".
+   */
+  canToggleSystemAudio?: boolean;
   sourceName: string;
   /**
    * Whether the engine recording this take can pause at all. The ffmpeg path
@@ -234,30 +286,12 @@ function Toolbar() {
 
   /**
    * The bar starts collapsed to a minimal strip — rec dot, timer, pause, stop —
-   * so it sits lightly over the user's content. Hover or the chevron expands it
-   * to reveal the mic/camera/source/draw controls; it re-collapses ~2s after
-   * the pointer leaves, unless a menu it opened is still up.
+   * so it sits lightly over the user's content. The chevron toggles it open to
+   * reveal the mic/camera/audio/source/draw controls. Explicit click only:
+   * hovering does not expand it, so the bar never grows just because the pointer
+   * passed over it, and it stays where the user put it until they close it.
    */
   const [collapsed, setCollapsed] = useState(true);
-  const collapseTimer = useRef<number | null>(null);
-
-  const cancelCollapse = useCallback(() => {
-    if (collapseTimer.current !== null) {
-      window.clearTimeout(collapseTimer.current);
-      collapseTimer.current = null;
-    }
-  }, []);
-
-  /** Arm the idle re-collapse. A no-op while a menu/tooltip holds it open. */
-  const scheduleCollapse = useCallback(() => {
-    cancelCollapse();
-    collapseTimer.current = window.setTimeout(() => setCollapsed(true), 2000);
-  }, [cancelCollapse]);
-
-  const expand = useCallback(() => {
-    cancelCollapse();
-    setCollapsed(false);
-  }, [cancelCollapse]);
 
   const onGripDown = (e: React.PointerEvent) => {
     const bar = barRef.current;
@@ -319,13 +353,8 @@ function Toolbar() {
                el.closest('.fui-MenuPopover') || el.closest('.fui-Tooltip')),
       );
       void window.ez.toolbar.setInteractive(overUi);
-
-      // Hover expands; leaving arms the idle re-collapse. Reuses the same
-      // hit-test so hovering a dropdown the bar opened keeps it expanded.
-      if (overUi) expand();
-      else scheduleCollapse();
     },
-    [expand, scheduleCollapse],
+    [],
   );
 
   useEffect(() => {
@@ -334,22 +363,11 @@ function Toolbar() {
   }, [onMouseMove]);
 
   // While a menu is open the pointer may leave the bar entirely; keep input
-  // granted until it closes, or the menu cannot be used. Also hold the bar
-  // expanded for the menu's lifetime, and re-arm the collapse once it closes.
-  const holdInteractive = useCallback(
-    (open: boolean) => {
-      if (open) {
-        void window.ez.toolbar.setInteractive(true);
-        expand();
-      } else {
-        scheduleCollapse();
-      }
-    },
-    [expand, scheduleCollapse],
-  );
-
-  // Clear a pending collapse timer if the component goes away mid-countdown.
-  useEffect(() => cancelCollapse, [cancelCollapse]);
+  // granted until it closes, or the menu cannot be used. Expansion is manual
+  // (the chevron), so a menu opening no longer changes the collapsed state.
+  const holdInteractive = useCallback((open: boolean) => {
+    if (open) void window.ez.toolbar.setInteractive(true);
+  }, []);
 
   if (!st) return null;
 
@@ -397,12 +415,13 @@ function Toolbar() {
         {paused && <Text className={s.pausedBadge}>{heldLabel}</Text>}
 
         {/*
-          Secondary controls. Hidden while collapsed so the bar is just the
-          essentials (rec dot, timer, pause, stop). Saving is terminal — there
-          is nothing left to configure — so they stay hidden then regardless.
+          Secondary controls. Kept mounted (not conditionally rendered) so the
+          group can animate its width open and closed; `collapsed` just swaps
+          the open/closed class. Saving is terminal — nothing left to configure —
+          so the group unmounts entirely then.
         */}
-        {!collapsed && !saving && (
-          <>
+        {!saving && (
+          <div className={`${s.group} ${collapsed ? s.groupClosed : s.groupOpen}`}>
             <PillControl
               label="Microphone"
               onIcon={<MicRegular />}
@@ -424,6 +443,39 @@ function Toolbar() {
               selectedId={st.cameraDeviceId}
               onSelect={(id) => send('toolbar:setCameraDevice', id)}
             />
+
+            {(() => {
+              // The ffmpeg engine records desktop audio as one lockstep track
+              // that can't gain or lose an input mid-take, so the control is
+              // shown for consistency but locked, with a tooltip that says why.
+              const locked = st.canToggleSystemAudio === false;
+              const on = st.systemAudioEnabled;
+              const tip = locked
+                ? `Computer audio ${on ? 'on' : 'off'} — set before recording`
+                : on
+                  ? 'Computer audio on — click to exclude it'
+                  : 'Computer audio off — click to include it';
+              return (
+                <Tooltip
+                  content={tip}
+                  relationship="label"
+                  withArrow
+                  onVisibleChange={(_e, d) => holdInteractive(d.visible)}
+                >
+                  <button
+                    className={`${s.roundBtn} ${!on ? s.roundBtnOff : ''} ${
+                      locked ? s.roundBtnDisabled : ''
+                    }`}
+                    onClick={() => !locked && send('toolbar:setSystemAudioEnabled', !on)}
+                    disabled={locked}
+                    aria-label={on ? 'Exclude computer audio' : 'Include computer audio'}
+                    aria-pressed={on}
+                  >
+                    {on ? <Speaker2Regular fontSize={20} /> : <SpeakerOffRegular fontSize={20} />}
+                  </button>
+                </Tooltip>
+              );
+            })()}
 
             <Tooltip
               content={st.sourceName ? `Recording: ${st.sourceName}` : 'Change source'}
@@ -449,7 +501,7 @@ function Toolbar() {
                 <InkStrokeRegular fontSize={20} />
               </button>
             </Tooltip>
-          </>
+          </div>
         )}
 
         <div className={s.divider} />
@@ -515,7 +567,7 @@ function Toolbar() {
           >
             <button
               className={s.expander}
-              onClick={() => (collapsed ? expand() : setCollapsed(true))}
+              onClick={() => setCollapsed((c) => !c)}
               aria-label={collapsed ? 'Show controls' : 'Hide controls'}
               aria-expanded={!collapsed}
             >
