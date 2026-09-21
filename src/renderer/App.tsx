@@ -50,6 +50,8 @@ import {
   VideoOffRegular,
   MicRegular,
   MicOffRegular,
+  Speaker2Regular,
+  SpeakerOffRegular,
   DesktopRegular,
   QuestionRegular,
   CloudArrowUpRegular,
@@ -137,6 +139,12 @@ const useStyles = makeStyles({
   roundBtnActive: {
     background: tokens.colorBrandBackground,
     color: tokens.colorNeutralForegroundOnBrand,
+  },
+  // "off" reads as a muted state, matching the mic/camera pill's off treatment.
+  roundBtnOff: {
+    background: tokens.colorPaletteRedBackground3,
+    color: tokens.colorNeutralForegroundOnBrand,
+    ':hover': { background: tokens.colorPaletteRedForeground1 },
   },
   // The primary action sits where Meet puts hang-up: far right, wider, colored.
   primaryBtn: {
@@ -1692,6 +1700,46 @@ export function App() {
           selectedId={settings.camera.deviceId}
           onSelect={(id) => setSettings((p) => ({ ...p, camera: { ...p.camera, deviceId: id } }))}
         />
+
+        {/* Computer (desktop) audio on/off. A plain toggle, not a device pill:
+            it captures the default playback endpoint, so there is nothing to
+            pick. Off keeps notification dings and app sound out of the take. */}
+        <Tooltip
+          content={
+            settings.recording.systemAudioEnabled
+              ? 'Computer audio on — click to exclude it'
+              : 'Computer audio off — click to include it'
+          }
+          relationship="label"
+          withArrow
+        >
+          <button
+            className={`${s.roundBtn} ${
+              settings.recording.systemAudioEnabled ? '' : s.roundBtnOff
+            }`}
+            aria-label={
+              settings.recording.systemAudioEnabled
+                ? 'Exclude computer audio'
+                : 'Include computer audio'
+            }
+            aria-pressed={settings.recording.systemAudioEnabled}
+            onClick={() =>
+              setSettings((p) => ({
+                ...p,
+                recording: {
+                  ...p.recording,
+                  systemAudioEnabled: !p.recording.systemAudioEnabled,
+                },
+              }))
+            }
+          >
+            {settings.recording.systemAudioEnabled ? (
+              <Speaker2Regular fontSize={20} />
+            ) : (
+              <SpeakerOffRegular fontSize={20} />
+            )}
+          </button>
+        </Tooltip>
 
         {/* Screen share — opens a visual picker; window titles alone are
             not enough to tell windows apart. */}
