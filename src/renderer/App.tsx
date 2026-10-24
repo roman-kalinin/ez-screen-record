@@ -698,6 +698,8 @@ export function App() {
     async (blob: Blob) => {
       setState('saving');
       try {
+        // Never write an empty file and call it a recording.
+        if (blob.size === 0) throw new Error('The recorder produced no data.');
         const buf = await blob.arrayBuffer();
         const stamp = new Date()
           .toISOString()

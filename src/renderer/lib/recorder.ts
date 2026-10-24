@@ -650,6 +650,16 @@ export class ScreenRecorder {
     const dest = this.audioContext.createMediaStreamDestination();
     this.audioDest = dest;
 
+    // Keep a silent source wired in at all times. With mic and desktop audio
+    // both off the destination has no inputs, its track never yields a sample,
+    // and Chromium's WebM muxer waits for audio before writing anything — the
+    // take saved as a 0-byte file. A zero-offset ConstantSource makes the track
+    // carry real (silent) samples, so video always flows.
+    const silence = this.audioContext.createConstantSource();
+    silence.offset.value = 0;
+    silence.connect(dest);
+    silence.start();
+
     for (const stream of inputs) {
       if (!stream.getAudioTracks().length) continue;
       const src = this.audioContext.createMediaStreamSource(stream);
