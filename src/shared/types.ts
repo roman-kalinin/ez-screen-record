@@ -335,3 +335,64 @@ export const DEFAULT_SETTINGS: AppSettings = {
     autoUpload: false,
   },
 };
+
+// ---------------------------------------------------------------------------
+// Video editor
+// ---------------------------------------------------------------------------
+
+/** What the main process learned about the recording from `ffmpeg -i`. */
+export interface EditorMediaInfo {
+  duration: number;
+  width: number;
+  height: number;
+  /** Nominal frame rate (tbr), used for the export's frame grid and GOP. */
+  fps: number;
+  hasAudio: boolean;
+  /** e.g. 'yuv420p' / 'yuv444p' — High quality keeps 4:4:4 if the source has it. */
+  pixFmt: string;
+}
+
+/** Everything the editor window needs to start: the one file it edits. */
+export interface EditorSession {
+  filePath: string;
+  fileName: string;
+  /** URL the <video> element loads (custom protocol with range support). */
+  mediaUrl: string;
+  sizeBytes: number;
+  /** null when ffmpeg is missing or could not read the file. */
+  info: EditorMediaInfo | null;
+  /** Sibling `<name>_edited.mp4` that does not exist yet. Never the source. */
+  defaultOutputPath: string;
+}
+
+export type EditorQuality = 'high' | 'balanced' | 'small';
+export type EditorResolution = 'source' | '1080' | '720' | '480';
+
+export interface EditorExportRequest {
+  /** Ranges of the source to KEEP, in seconds, sorted and non-overlapping. */
+  keep: Array<[number, number]>;
+  keepAudio: boolean;
+  quality: EditorQuality;
+  resolution: EditorResolution;
+  outputPath: string;
+}
+
+export interface EditorExportProgress {
+  phase: 'preparing' | 'encoding' | 'joining';
+  /** 0..1 across the whole export. */
+  fraction: number;
+  encoder?: string;
+  /** ffmpeg's own speed readout, e.g. "3.2x". */
+  speed?: string;
+}
+
+export interface EditorExportResult {
+  ok: boolean;
+  outputPath?: string;
+  error?: string;
+  cancelled?: boolean;
+  encoder?: string;
+  /** 'single-pass' = one filter_complex; 'segmented' = slim-ffmpeg fallback. */
+  mode?: 'single-pass' | 'segmented';
+  sizeBytes?: number;
+}

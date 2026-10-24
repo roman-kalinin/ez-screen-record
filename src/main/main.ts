@@ -33,6 +33,7 @@ import {
 } from './native-recorder';
 import { enableDnd, disableDnd, restoreDndOnLaunch } from './dnd';
 import { uploadAndShare } from './gofile';
+import { openEditor, registerEditor, registerEditorScheme } from './editor';
 import { randomUUID } from 'crypto';
 
 const isDev = process.env.NODE_ENV === 'development';
@@ -97,7 +98,7 @@ let nativeRecorder: NativeRecorder | null = null;
 const APP_ROOT = path.join(__dirname, '..', '..');
 
 /** Resolve a renderer entry to either the dev server or the built file. */
-function rendererUrl(page: 'index' | 'overlay' | 'camera' | 'toolbar'): string {
+function rendererUrl(page: 'index' | 'overlay' | 'camera' | 'toolbar' | 'editor'): string {
   if (isDev) return `${DEV_SERVER}/${page}.html`;
   return `file://${path.join(APP_ROOT, 'dist', `${page}.html`)}`;
 }
@@ -1253,6 +1254,9 @@ function registerHotkeys() {
   }
 }
 
+// The editor's media scheme must be registered before 'ready'.
+registerEditorScheme();
+
 // A screen capture that briefly fails to produce a frame is normal and
 // self-correcting; Chromium logs it every frame regardless. Quieten it so it
 // cannot flood the pipe.
@@ -1313,6 +1317,13 @@ if (!gotLock) {
     });
 
     registerIpc();
+    registerEditor({
+      rendererUrl: () => rendererUrl('editor'),
+      preloadPath: preloadPath(),
+      iconPath: appIconPath(),
+      isDev,
+      log: (...args) => safeLog('error', ...args),
+    });
 
     // macOS prompts for camera and microphone here, so the user meets those
     // dialogs while setting up rather than at the moment they press record.
@@ -1329,6 +1340,8 @@ if (!gotLock) {
     // rather than paying for React and the Fluent bundle mid-take.
     createToolbarWindow(screen.getPrimaryDisplay());
     registerHotkeys();
+    // Dev aid: open the editor on a file straight away (EZ_OPEN_EDITOR=<path>).
+    if (isDev && process.env.EZ_OPEN_EDITOR) openEditor(process.env.EZ_OPEN_EDITOR);
     // Bring up the menu-bar item if the user has enabled it (macOS only).
     syncTray();
 

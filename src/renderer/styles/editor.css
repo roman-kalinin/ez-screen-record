@@ -1,0 +1,33 @@
+/* Editor window: always dark, warm near-black. Loaded after app.css. */
+html,
+body,
+#root {
+  background: #131211 !important;
+  color-scheme: dark;
+}
+
+/* app.css paints flyouts a neutral WinUI grey; the editor's are warm. */
+html .fui-MenuPopover,
+html .fui-PopoverSurface,
+html .fui-Listbox,
+html .fui-Dropdown__listbox,
+html .fui-Tooltip {
+  background-color: #1f1d1b !important;
+  border: 1px solid rgba(255, 244, 230, 0.1) !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5) !important;
+}
+
+/* app.css's light-mode rules must not reach the always-dark editor. */
+@media (prefers-color-scheme: light) {
+  html .fui-MenuPopover,
+  html .fui-PopoverSurface,
+  html .fui-Listbox,
+  html .fui-Dropdown__listbox,
+  html .fui-Tooltip {
+    background-color: #1f1d1b !important;
+  }
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 244, 230, 0.14);
+}

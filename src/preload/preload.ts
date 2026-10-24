@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AppSettings, CaptureSource, SaveResult } from '../shared/types';
+import type {
+  AppSettings,
+  CaptureSource,
+  EditorExportRequest,
+  EditorExportResult,
+  EditorSession,
+  SaveResult,
+} from '../shared/types';
 
 /** The single, explicit surface the renderers are allowed to touch.
  *  Node integration stays off; everything crosses through here. */
@@ -134,6 +141,25 @@ const api = {
       filePath: string,
     ): Promise<{ ok: boolean; viewUrl?: string; error?: string }> =>
       ipcRenderer.invoke('share:upload', filePath),
+  },
+
+  /**
+   * The built-in single-video editor. open() is called from the control
+   * window; everything else is called from inside an editor window, which the
+   * main process identifies by its webContents — each editor edits exactly the
+   * one file it was opened on. Export progress arrives on
+   * 'editor:exportProgress' via on().
+   */
+  editor: {
+    open: (filePath: string): Promise<boolean> => ipcRenderer.invoke('editor:open', filePath),
+    session: (): Promise<EditorSession | null> => ipcRenderer.invoke('editor:session'),
+    chooseOutput: (current: string): Promise<{ path?: string; error?: string } | null> =>
+      ipcRenderer.invoke('editor:chooseOutput', current),
+    export: (req: EditorExportRequest): Promise<EditorExportResult> =>
+      ipcRenderer.invoke('editor:export', req),
+    cancelExport: (): Promise<boolean> => ipcRenderer.invoke('editor:cancelExport'),
+    window: (action: 'minimize' | 'maximize' | 'close'): Promise<void> =>
+      ipcRenderer.invoke('editor:window', action),
   },
 
   chooseOutputDir: (): Promise<string | null> => ipcRenderer.invoke('dialog:chooseOutputDir'),

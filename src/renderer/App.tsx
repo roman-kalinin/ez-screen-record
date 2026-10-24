@@ -55,6 +55,7 @@ import {
   DesktopRegular,
   QuestionRegular,
   CloudArrowUpRegular,
+  CutRegular,
 } from '@fluentui/react-icons';
 import { LayoutStage } from './components/LayoutStage';
 import { ShareSettings } from './components/ShareSettings';
@@ -561,6 +562,10 @@ export function App() {
             <Link onClick={() => window.ez.revealFile(filePath)}>Show in folder</Link>
           </ToastBody>
           <ToastFooter>
+            <Link onClick={() => void window.ez.editor.open(filePath)}>
+              <CutRegular style={{ marginRight: 4, verticalAlign: 'text-bottom' }} />
+              Edit
+            </Link>
             <Link
               onClick={() => void uploadToShare(filePath)}
               // Icon in front of the label, matching the transport controls.

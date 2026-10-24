@@ -283,6 +283,14 @@ make distclean >/dev/null 2>&1 || true
   --enable-filter=aformat \
   --enable-filter=mpdecimate \
   --enable-filter=colorchannelmixer \
+  `# The built-in editor's export (src/main/editor.ts) trims every kept range` \
+  `# and joins them in ONE filter_complex pass, so audio cannot drift. Builds` \
+  `# without these fall back to a slower segmented export.` \
+  --enable-filter=trim \
+  --enable-filter=atrim \
+  --enable-filter=setpts \
+  --enable-filter=asetpts \
+  --enable-filter=concat \
   \
   --enable-encoder=h264_nvenc \
   --enable-encoder=hevc_nvenc \
