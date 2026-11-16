@@ -33,7 +33,7 @@ case "$(uname -m)" in
   *) fail "Unsupported CPU: $(uname -m)" ;;
 esac
 
-say "Looking up the latest release for $KIND…"
+say "Looking up the latest release for ${KIND}…"
 RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")" \
   || fail "Could not reach GitHub. Check your internet connection and try again."
 
