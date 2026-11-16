@@ -11,6 +11,7 @@
     --bg: #0b0b0d; --panel: #141418; --text: #ededf0; --muted: #9a9aa3;
     --line: rgba(255,255,255,.08); --accent: #7c8cff; --red: #d9443c;
     --sans: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --ease: cubic-bezier(.22, 1, .36, 1);
     --display: "Segoe UI Variable Display", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   }
   * { box-sizing: border-box; }
@@ -98,21 +99,19 @@
   /* ---------- Live demo: the real app UI in iframes ---------- */
   .demo { min-width: 0; }
   .screen {
-    position: relative; width: 100%; aspect-ratio: 16 / 10; border-radius: 14px; overflow: hidden;
-    box-shadow: 0 30px 80px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.08);
-    background: #1c2a52;
+    position: relative; width: 100%; aspect-ratio: 880 / 625; border-radius: 12px; overflow: hidden;
+    background: #202020;
+    box-shadow: 0 40px 100px -20px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.09);
   }
-  .scaler { position: absolute; left: 0; top: 0; width: 1200px; height: 750px; transform-origin: 0 0; }
-  .scaler canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-  .scaler iframe { position: absolute; border: 0; pointer-events: none; background: transparent; }
-  #app-frame {
-    left: 160px; top: 62px; width: 880px; height: 625px; border-radius: 8px;
-    box-shadow: 0 24px 60px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.08);
-    transition: opacity .35s, transform .35s;
-  }
-  #app-frame.away { opacity: 0; transform: scale(.96) translateY(20px); }
-  #tb-frame { inset: 0; width: 1200px; height: 750px; opacity: 0; transition: opacity .3s; }
-  #tb-frame.on { opacity: 1; }
+  .scaler { position: absolute; left: 0; top: 0; width: 880px; height: 625px; transform-origin: 0 0; }
+  .scaler > canvas, .scaler > iframe { position: absolute; inset: 0; width: 880px; height: 625px; border: 0; pointer-events: none; }
+  #app-frame { transition: opacity .45s var(--ease), transform .6s var(--ease), filter .45s; }
+  #app-frame.away { opacity: 0; transform: scale(.94); filter: blur(6px); }
+  /* While recording the real app steps aside for its floating toolbar, over the screen being recorded. */
+  #desk, #tb-frame { opacity: 0; transition: opacity .5s var(--ease), transform .8s var(--ease); }
+  #desk { transform: scale(1.06); }
+  #desk.on, #tb-frame.on { opacity: 1; transform: none; }
+  #tb-frame { transform: translateY(-14px); }
   .cursor {
     position: absolute; left: 0; top: 0; width: 26px; height: 26px; z-index: 5; pointer-events: none;
     transition: transform .8s cubic-bezier(.45,.05,.25,1);
@@ -131,7 +130,13 @@
     flex: none; width: 26px; height: 26px; border-radius: 50%; background: rgba(124,140,255,.16);
     color: var(--accent); font-size: 13px; font-weight: 600; display: grid; place-items: center;
   }
-  .step-t { font-size: 16px; transition: opacity .25s; }
+  .step-wrap { position: relative; overflow: hidden; height: 26px; flex: 1; }
+  .step-t { position: absolute; left: 0; top: 0; white-space: nowrap; font-size: 16px;
+    transition: transform .55s var(--ease), opacity .55s var(--ease), filter .55s var(--ease); }
+  .step-t.out { transform: translateY(-110%); opacity: 0; filter: blur(4px); }
+  .step-t.in { transform: translateY(110%); opacity: 0; filter: blur(4px); transition: none; }
+  .step-n { transition: transform .45s cubic-bezier(.34, 1.56, .64, 1), background .3s; }
+  .step-n.bump { transform: scale(1.2); background: rgba(124,140,255,.3); }
   .progress { display: flex; gap: 6px; margin-top: 14px; }
   .progress i { height: 3px; flex: 1; border-radius: 2px; background: rgba(255,255,255,.1); overflow: hidden; }
   .progress i::after { content: ""; display: block; height: 100%; width: 0; background: var(--accent); }
@@ -139,11 +144,85 @@
   .progress i.now::after { width: 100%; transition: width var(--d, 2s) linear; }
   .progress i.now.start::after { width: 0; transition: none; }
 
+  /* ---------- Motion ---------- */
+  /* Staggered entrance: each piece rises out of a soft blur. */
+  .rise { opacity: 0; transform: translateY(18px); filter: blur(8px);
+    animation: rise .9s var(--ease) forwards; animation-delay: calc(var(--i, 0) * 90ms + 120ms); }
+  @keyframes rise { to { opacity: 1; transform: none; filter: blur(0); } }
+
+  .logo-wrap { position: relative; width: 72px; height: 72px; margin-bottom: 24px; }
+  .logo-wrap .logo { margin: 0; transform-origin: 50% 60%; }
+  .logo.rise { transform: translateY(14px) scale(.55) rotate(-14deg);
+    animation: logo-in 1.1s cubic-bezier(.34, 1.56, .64, 1) 60ms forwards; }
+  @keyframes logo-in { to { opacity: 1; transform: none; filter: blur(0); } }
+  .logo-wrap::after { /* the record dot breathes */
+    content: ""; position: absolute; left: 50%; top: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px;
+    border-radius: 50%; animation: breathe 2.8s ease-out 1.5s infinite;
+  }
+  @keyframes breathe { 0% { box-shadow: 0 0 0 0 rgba(255,90,90,.5); } 100% { box-shadow: 0 0 0 26px rgba(255,90,90,0); } }
+
+  /* Headline: words slide up from behind a mask, one after another. */
+  h1 .w { display: inline-block; overflow: hidden; vertical-align: top; padding-bottom: .1em; margin-bottom: -.1em; }
+  h1 .w > span { display: inline-block; transform: translateY(110%);
+    animation: word 1s var(--ease) forwards; animation-delay: calc(var(--i) * 85ms + 200ms); }
+  @keyframes word { to { transform: none; } }
+
+  /* Toggle: one highlight that glides between the two options. */
+  .toggle { position: relative; }
+  .toggle .thumb { position: absolute; top: 4px; bottom: 4px; left: 0; width: 0; border-radius: 9px;
+    background: rgba(255,255,255,.09); box-shadow: 0 1px 0 rgba(255,255,255,.06) inset;
+    transition: transform .55s var(--ease), width .55s var(--ease); }
+  .toggle button { position: relative; z-index: 1; transition: color .3s; }
+  .toggle button[aria-selected="true"] { background: transparent; }
+  .toggle button svg { transition: transform .55s cubic-bezier(.34, 1.56, .64, 1); }
+  .toggle button[aria-selected="true"] svg { transform: scale(1.15); }
+  .toggle button:not([aria-selected="true"]):hover { color: #c9c9d1; }
+
+  /* Switching platform: the section's lines re-enter in sequence. */
+  .section.enter > * { opacity: 0; transform: translateY(12px); filter: blur(6px); animation: rise .65s var(--ease) forwards; }
+  .section.enter > *:nth-child(2) { animation-delay: 60ms; }
+  .section.enter > *:nth-child(3) { animation-delay: 120ms; }
+  .section.enter > *:nth-child(4) { animation-delay: 180ms; }
+  .section.enter > *:nth-child(5) { animation-delay: 240ms; }
+  ol li { transition: color .2s; }
+  ol li:hover { color: #c9c9d1; }
+
+  /* Copy: the label rolls over to "Copied" and the field glows once. */
+  .cmd { transition: border-color .3s, box-shadow .5s var(--ease); }
+  .cmd:hover { border-color: rgba(255,255,255,.14); }
+  .cmd.flash { box-shadow: 0 0 0 4px rgba(124,140,255,.18); border-color: rgba(124,140,255,.55); }
+  .cmd button { position: relative; overflow: hidden; transition: background .2s; }
+  .cmd button span { display: block; transition: transform .5s var(--ease), opacity .35s; }
+  .cmd button .ok { position: absolute; inset: 0; display: grid; place-items: center; color: var(--accent);
+    transform: translateY(100%); opacity: 0; }
+  .cmd button.done span:first-child { transform: translateY(-100%); opacity: 0; }
+  .cmd button.done .ok { transform: none; opacity: 1; }
+
+  .btn { transition: background .15s, border-color .15s, transform .25s var(--ease); }
+  .btn:hover svg { animation: nudge .7s var(--ease); }
+  .btn:active { transform: scale(.97); }
+  @keyframes nudge { 45% { transform: translateY(2.5px); } }
+
+  /* Demo arrives with a little depth, then settles; a sheen passes once. */
+  .demo { perspective: 1400px; }
+  .stage-in { opacity: 0; transform: translateY(44px) rotateX(12deg) scale(.95); filter: blur(12px);
+    transform-origin: 50% 100%; animation: stage-in 1.4s var(--ease) .5s forwards; }
+  @keyframes stage-in { to { opacity: 1; transform: none; filter: blur(0); } }
+  .screen::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 6;
+    background: linear-gradient(105deg, transparent 35%, rgba(255,255,255,.08) 50%, transparent 65%);
+    transform: translateX(-100%); animation: sheen 1.8s var(--ease) 1.3s forwards;
+  }
+  @keyframes sheen { to { transform: translateX(100%); } }
+  .caption, .progress { opacity: 0; animation: rise .8s var(--ease) 1.1s forwards; }
+
   @media (max-width: 1100px) {
     .wrap { grid-template-columns: minmax(0, 1fr); max-width: 640px; gap: 48px; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .bg i { animation: none; }
+    .bg i, .logo-wrap::after, .screen::after { animation: none; }
+    .rise, .logo.rise, h1 .w > span, .stage-in, .section.enter > *, .caption, .progress {
+      animation: none; opacity: 1; transform: none; filter: none; }
   }
 </style>
 </head>
@@ -152,20 +231,21 @@
 
 <div class="wrap">
 <main>
-  <img class="logo" src="icon.png" alt="">
-  <h1>Ez Screen Record</h1>
-  <p class="lead">A minimal screen recorder for tutorial videos. For Mac (Apple Silicon and Intel) and Windows.</p>
+  <div class="logo-wrap"><img class="logo rise" src="icon.png" alt=""></div>
+  <h1><span class="w"><span style="--i:0">Ez</span></span> <span class="w"><span style="--i:1">Screen</span></span> <span class="w"><span style="--i:2">Record</span></span></h1>
+  <p class="lead rise" style="--i:4">A minimal screen recorder for tutorial videos. For Mac (Apple Silicon and Intel) and Windows.</p>
 
-  <div class="toggle" role="tablist">
+  <div class="toggle rise" role="tablist" style="--i:5">
+    <span class="thumb" aria-hidden="true"></span>
     <button type="button" role="tab" data-os="mac"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.960.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.830-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>Mac</button>
     <button type="button" role="tab" data-os="win"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M0 3.449 9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>Windows</button>
   </div>
 
-  <section class="section" id="mac">
+  <section class="section rise" id="mac" style="--i:6">
   <div class="label">Install on your Mac</div>
   <div class="cmd">
     <code>curl -fsSL https://roman-kalinin.github.io/ez-screen-record/install.sh | bash</code>
-    <button class="copy" type="button">Copy</button>
+    <button class="copy" type="button"><span>Copy</span><span class="ok">Copied</span></button>
   </div>
 
   <ol>
@@ -182,11 +262,11 @@
   </p>
   </section>
 
-  <section class="section" id="win">
+  <section class="section rise" id="win" style="--i:6">
   <div class="label">Install on Windows</div>
   <div class="cmd">
     <code>irm https://roman-kalinin.github.io/ez-screen-record/install.ps1 | iex</code>
-    <button class="copy" type="button">Copy</button>
+    <button class="copy" type="button"><span>Copy</span><span class="ok">Copied</span></button>
   </div>
 
   <ol>
@@ -211,17 +291,19 @@
 </main>
 
 <aside class="demo" aria-label="How Ez Screen Record works">
+  <div class="stage-in">
   <div class="screen" id="screen">
     <div class="scaler" id="scaler">
-      <canvas id="desk" width="1200" height="750"></canvas>
+      <canvas id="desk" width="880" height="625"></canvas>
       <iframe id="app-frame" src="demo/demo.html" title="Ez Screen Record demo" tabindex="-1"></iframe>
-      <iframe id="tb-frame" src="demo/demo-toolbar.html" title="" tabindex="-1" allowtransparency="true"></iframe>
+      <iframe id="tb-frame" src="demo/demo-toolbar.html" title="" tabindex="-1"></iframe>
       <div class="cursor" id="cursor">
         <svg viewBox="0 0 20 20"><path d="M3 2v14l4-3.6 2.6 5.6 2.3-1-2.6-5.5H15z" fill="#fff" stroke="#111" stroke-width="1.2" stroke-linejoin="round"/></svg>
       </div>
     </div>
   </div>
-  <div class="caption"><span class="step-n" id="step-n">1</span><span class="step-t" id="step-t">Pick what to record</span></div>
+  </div>
+  <div class="caption"><span class="step-n" id="step-n">1</span><span class="step-wrap" id="step-wrap"></span></div>
   <div class="progress" id="progress"></div>
 </aside>
 </div>
@@ -241,21 +323,41 @@
 
   // Mac / Windows toggle; starts on the visitor's own platform.
   const tabs = document.querySelectorAll('.toggle button');
+  const thumb = document.querySelector('.toggle .thumb');
+  let current = null;
+  function placeThumb() {
+    const on = document.querySelector('.toggle button[aria-selected="true"]');
+    if (!on) return;
+    thumb.style.width = on.offsetWidth + 'px';
+    thumb.style.transform = `translateX(${on.offsetLeft}px)`;
+  }
   function show(os) {
+    if (os === current) return;
+    const animate = current !== null;
+    current = os;
     tabs.forEach((t) => t.setAttribute('aria-selected', String(t.dataset.os === os)));
-    document.getElementById('mac').hidden = os !== 'mac';
-    document.getElementById('win').hidden = os !== 'win';
+    for (const id of ['mac', 'win']) {
+      const sec = document.getElementById(id);
+      sec.hidden = id !== os;
+      if (animate && id === os) {
+        sec.classList.remove('rise', 'enter'); void sec.offsetWidth; sec.classList.add('enter');
+      }
+    }
+    placeThumb();
     history.replaceState(null, '', '#' + os);
   }
   tabs.forEach((t) => t.addEventListener('click', () => show(t.dataset.os)));
+  window.addEventListener('resize', placeThumb);
+  document.fonts && document.fonts.ready.then(placeThumb);
   const fromHash = location.hash.slice(1);
   show(fromHash === 'mac' || fromHash === 'win' ? fromHash : /Windows/i.test(navigator.userAgent) ? 'win' : 'mac');
 
   document.querySelectorAll('.copy').forEach((btn) => {
     btn.addEventListener('click', async () => {
       await navigator.clipboard.writeText(btn.previousElementSibling.textContent);
-      btn.textContent = 'Copied'; btn.classList.add('done');
-      setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('done'); }, 1600);
+      const box = btn.closest('.cmd');
+      btn.classList.add('done'); box.classList.add('flash');
+      setTimeout(() => { btn.classList.remove('done'); box.classList.remove('flash'); }, 1700);
     });
   });
 
