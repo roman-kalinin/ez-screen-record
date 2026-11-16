@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ez Screen Record for Mac</title>
+<meta name="description" content="A minimal screen recorder for tutorial videos. Install on your Mac with one command.">
+<link rel="icon" href="icon.png">
+<style>
+  :root {
+    --bg: #0b0b0d; --panel: #141418; --text: #ededf0; --muted: #9a9aa3;
+    --line: rgba(255,255,255,.08); --accent: #7c8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    display: flex; align-items: center; justify-content: center; padding: 48px 20px;
+  }
+  main { width: 100%; max-width: 640px; }
+  .logo { width: 72px; height: 72px; border-radius: 16px; display: block; margin-bottom: 24px; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 10px; letter-spacing: -.02em; }
+  .lead { color: var(--muted); margin: 0 0 36px; font-size: 18px; }
+  .label { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 10px; }
+  .cmd {
+    display: flex; align-items: stretch; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; overflow: hidden;
+  }
+  .cmd code {
+    flex: 1; padding: 16px 18px; font: 14px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+    white-space: nowrap; overflow-x: auto; color: var(--text);
+  }
+  .cmd button {
+    border: 0; border-left: 1px solid var(--line); background: transparent; color: var(--text);
+    padding: 0 20px; font: inherit; font-size: 14px; cursor: pointer; min-width: 84px;
+  }
+  .cmd button:hover { background: rgba(255,255,255,.04); }
+  .cmd button.done { color: var(--accent); }
+  ol { color: var(--muted); padding-left: 20px; margin: 22px 0 40px; }
+  ol li { margin: 6px 0; }
+  kbd {
+    font: 13px ui-monospace, Menlo, monospace; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 5px; padding: 1px 6px; color: var(--text);
+  }
+  .note { border-top: 1px solid var(--line); padding-top: 22px; color: var(--muted); font-size: 14px; }
+  a { color: var(--text); }
+</style>
+</head>
+<body>
+<main>
+  <img class="logo" src="icon.png" alt="">
+  <h1>Ez Screen Record</h1>
+  <p class="lead">A minimal screen recorder for tutorial videos. Works on Apple Silicon and Intel Macs.</p>
+
+  <div class="label">Install on your Mac</div>
+  <div class="cmd">
+    <code id="cmd">curl -fsSL https://roman-kalinin.github.io/ez-screen-record/install.sh | bash</code>
+    <button id="copy" type="button">Copy</button>
+  </div>
+
+  <ol>
+    <li>Open <strong>Terminal</strong> (<kbd>⌘</kbd> <kbd>Space</kbd>, type “Terminal”).</li>
+    <li>Paste the command and press <kbd>Return</kbd>.</li>
+    <li>When the app opens, allow <strong>Screen Recording</strong>, then quit and reopen it once.</li>
+  </ol>
+
+  <p class="note">
+    Running it again updates to the newest version.
+    Prefer to install by hand? Grab the <code>.dmg</code> from
+    <a href="https://github.com/roman-kalinin/ez-screen-record/releases/latest">the latest release</a>
+    (<em>arm64</em> for Apple Silicon, <em>x64</em> for Intel).
+  </p>
+</main>
+<script>
+  const btn = document.getElementById('copy');
+  btn.addEventListener('click', async () => {
+    await navigator.clipboard.writeText(document.getElementById('cmd').textContent);
+    btn.textContent = 'Copied'; btn.classList.add('done');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('done'); }, 1600);
+  });
+</script>
+</body>
+</html>
