@@ -19,21 +19,47 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const DEST = path.join(ROOT, 'resources', 'ffmpeg');
-const TMP = path.join(ROOT, '.ffmpeg-tmp');
+const TMP_ROOT = path.join(ROOT, '.ffmpeg-tmp');
 
 const IS_MAC = process.platform === 'darwin';
 
-// BtbN's win64-gpl build: has ddagrab, libplacebo and nvenc, and the URL is
-// stable (it always points at the newest master build).
+// Windows: BtbN's win64-gpl build has ddagrab, libplacebo and nvenc, and the
+// URL is stable (it always points at the newest master build).
 //
-// macOS has no equivalent auto-updating GPL zip, so evermeet.cx is used — the
-// long-standing source for static macOS ffmpeg builds. It is Intel-only, which
-// is fine: it runs on Apple Silicon under Rosetta 2, and ffmpeg here is a
-// short-lived subprocess whose work is done by the hardware encoder anyway.
-const URL = IS_MAC
-  ? 'https://evermeet.cx/ffmpeg/getrelease/zip'
-  : 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip';
+// macOS: Martin Riedl's static builds, one binary PER ARCHITECTURE. The Mac
+// app ships separate arm64 and x64 DMGs, and each must carry an ffmpeg for its
+// own CPU. This used to bundle a single Intel-only evermeet.cx binary into both,
+// which on an Apple Silicon Mac without Rosetta 2 fails to even start
+// ("spawn Unknown system error -86", EBADARCH) -- every recording then ended in
+// "Could not save recording". evermeet.cx's download URL has since gone (410).
+const RIEDL = (arch) =>
+  `https://ffmpeg.martin-riedl.de/redirect/latest/macos/${arch}/release/ffmpeg.zip`;
+
+// Which targets to fetch. On a Mac both architectures are fetched by default
+// (electron-builder packages both DMGs in one run); `--arch=arm64` or
+// `--arch=x64` limits it to one.
+function targets() {
+  if (!IS_MAC) {
+    return [{
+      name: 'win64',
+      url: 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip',
+      dest: path.join(ROOT, 'resources', 'ffmpeg'),
+      lipoArch: null,
+    }];
+  }
+  const flag = process.argv.find((a) => a.startsWith('--arch='));
+  const wanted = flag ? [flag.slice('--arch='.length)] : ['arm64', 'x64'];
+  return wanted.map((arch) => {
+    if (arch !== 'arm64' && arch !== 'x64') throw new Error(`unknown --arch ${arch}`);
+    return {
+      name: `mac-${arch}`,
+      url: RIEDL(arch === 'x64' ? 'amd64' : 'arm64'),
+      // electron-builder copies resources/ffmpeg-mac-${arch} -> ffmpeg per DMG.
+      dest: path.join(ROOT, 'resources', `ffmpeg-mac-${arch}`),
+      lipoArch: arch === 'x64' ? 'x86_64' : 'arm64',
+    };
+  });
+}
 
 // What the recorder actually needs, per platform. Verified before install so a
 // build that would fail at record time fails here instead.
@@ -103,6 +129,14 @@ function extract(zip, dir) {
 /** Reject a build missing anything the recorder needs, rather than shipping it. */
 function verify(exe) {
   const missing = [];
+  // An x64 binary cannot run on Apple Silicon without Rosetta, so its features
+  // cannot be probed there. Its architecture was already checked with lipo;
+  // say so plainly rather than reporting every feature as missing.
+  const runnable = spawnSync(exe, ['-hide_banner', '-version'], { encoding: 'utf8' });
+  if (runnable.error || runnable.status !== 0) {
+    console.warn(`  ! cannot run ${exe} on this machine (${runnable.error?.code ?? runnable.status}); skipping feature check`);
+    return missing;
+  }
   const probe = (args) => spawnSync(exe, ['-hide_banner', ...args], { encoding: 'utf8' }).stdout ?? '';
 
   const filters = probe(['-filters']);
@@ -126,22 +160,26 @@ function verify(exe) {
   return missing;
 }
 
-async function main() {
-  if (!IS_MAC && process.platform !== 'win32') {
-    console.error('Only Windows and macOS builds are fetched automatically. Skipping.');
-    process.exit(0);
-  }
+/** Which CPU architectures a Mach-O binary contains, e.g. ['arm64']. */
+function machoArchs(exe) {
+  const out = spawnSync('lipo', ['-archs', exe], { encoding: 'utf8' });
+  return (out.stdout ?? '').trim().split(/\s+/).filter(Boolean);
+}
 
-  await mkdir(TMP, { recursive: true });
-  await mkdir(DEST, { recursive: true });
+async function fetchTarget(t) {
+  console.log(`
+== ${t.name}`);
+  const tmp = path.join(TMP_ROOT, t.name);
+  await mkdir(tmp, { recursive: true });
+  await mkdir(t.dest, { recursive: true });
 
-  const zip = path.join(TMP, 'ffmpeg.zip');
+  const zip = path.join(tmp, 'ffmpeg.zip');
 
-  // Reuse an already-downloaded archive. This is ~170MB, and a failure during
-  // extraction should not cost another download to retry.
+  // Reuse an already-downloaded archive (the Windows one is ~170MB), so a
+  // failure during extraction does not cost another download to retry.
   let haveZip = false;
   try {
-    haveZip = (await stat(zip)).size > 50_000_000;
+    haveZip = (await stat(zip)).size > 10_000_000;
   } catch {
     haveZip = false;
   }
@@ -149,18 +187,27 @@ async function main() {
   if (haveZip) {
     console.log('Reusing previously downloaded archive.');
   } else {
-    console.log(`Downloading ${URL}`);
-    const res = await fetch(URL, { redirect: 'follow' });
+    console.log(`Downloading ${t.url}`);
+    const res = await fetch(t.url, { redirect: 'follow' });
     if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
     await pipeline(Readable.fromWeb(res.body), createWriteStream(zip));
     console.log(`Downloaded ${(await stat(zip)).size} bytes`);
   }
 
   console.log('Extracting…');
-  extract(zip, TMP);
+  extract(zip, tmp);
 
-  const exe = await findExe(TMP);
+  const exe = await findExe(tmp);
   if (!exe) throw new Error(`${EXE_NAME} not found in the archive`);
+
+  if (IS_MAC) {
+    await chmod(exe, 0o755);
+    const archs = machoArchs(exe);
+    if (!archs.includes(t.lipoArch)) {
+      throw new Error(`${t.name}: binary is [${archs.join(', ')}], expected ${t.lipoArch}`);
+    }
+    console.log(`Architecture: ${archs.join(', ')}`);
+  }
 
   const missing = verify(exe);
   if (missing.length) {
@@ -169,9 +216,9 @@ async function main() {
     );
   }
   const verified = [...REQUIRED_FILTERS, ...REQUIRED_ENCODERS, ...REQUIRED_DEVICES];
-  console.log(`Verified: ${verified.join(', ')} all present.`);
+  console.log(`Checked: ${verified.join(', ')}.`);
 
-  const dest = path.join(DEST, EXE_NAME);
+  const dest = path.join(t.dest, EXE_NAME);
   await copyFile(exe, dest);
 
   if (IS_MAC) {
@@ -186,14 +233,23 @@ async function main() {
     }
   }
 
-  await rm(TMP, { recursive: true, force: true });
+  await rm(tmp, { recursive: true, force: true });
   console.log(`Installed -> ${dest}`);
+}
+
+async function main() {
+  if (!IS_MAC && process.platform !== 'win32') {
+    console.error('Only Windows and macOS builds are fetched automatically. Skipping.');
+    process.exit(0);
+  }
+  for (const t of targets()) await fetchTarget(t);
+  await rm(TMP_ROOT, { recursive: true, force: true }).catch(() => {});
 }
 
 main().catch((err) => {
   // Deliberately NOT cleaning up .ffmpeg-tmp here: the download is ~170MB and
   // keeping it makes a retry after an extraction failure instant.
   console.error(`\nfetch-ffmpeg failed: ${err.message}`);
-  console.error('You can instead drop ffmpeg.exe into resources/ffmpeg manually.');
+  console.error('You can instead drop the binary in manually: resources/ffmpeg/ffmpeg.exe (Windows) or resources/ffmpeg-mac-<arch>/ffmpeg (macOS).');
   process.exit(1);
 });

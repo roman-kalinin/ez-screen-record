@@ -35,6 +35,8 @@ export function ffmpegPath(): string {
     path.join(process.resourcesPath ?? '', 'ffmpeg', exe),
     // Dev: a binary dropped into the repo for testing the packaged layout.
     path.join(process.cwd(), 'resources', 'ffmpeg', exe),
+    // Dev on a Mac: fetch-ffmpeg stores one binary per architecture.
+    path.join(process.cwd(), 'resources', `ffmpeg-mac-${process.arch}`, exe),
   ];
 
   const found = bundled.find((p) => {
@@ -67,14 +69,26 @@ export function ffmpegPath(): string {
 
 function runFfmpeg(args: string[], timeoutMs: number): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve) => {
-    const proc = spawn(ffmpegPath(), args, { windowsHide: true });
+    // spawn() reports most failures through the 'error' event, but some it
+    // THROWS synchronously -- notably "Bad CPU type in executable" (EBADARCH,
+    // errno -86) when an Intel-only ffmpeg is launched on an Apple Silicon Mac
+    // without Rosetta. Uncaught, that rejected hasFfmpeg() and remuxToMp4(),
+    // and every save on such a Mac ended in "Could not save recording" even
+    // though the file had already been written.
+    let proc: ReturnType<typeof spawn>;
+    try {
+      proc = spawn(ffmpegPath(), args, { windowsHide: true });
+    } catch {
+      resolve({ code: -1, stderr: 'spawn failed' });
+      return;
+    }
     let stderr = '';
     const timer = setTimeout(() => {
       proc.kill();
       resolve({ code: -1, stderr: 'timed out' });
     }, timeoutMs);
 
-    proc.stderr.on('data', (d) => {
+    proc.stderr?.on('data', (d) => {
       stderr += String(d);
     });
     proc.on('error', () => {

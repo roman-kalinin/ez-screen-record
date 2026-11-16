@@ -914,7 +914,15 @@ function registerIpc() {
 
         // Give the renderer the finished path only after remuxing, so the
         // "Show in folder" link always points at the file that survives.
-        const finalPath = await remuxToMp4(filePath);
+        //
+        // The file is already on disk at this point, so a remux failure must
+        // never turn into "Could not save recording": keep the original.
+        let finalPath = filePath;
+        try {
+          finalPath = await remuxToMp4(filePath);
+        } catch (err) {
+          console.warn('[save] remux failed; keeping the original file', err);
+        }
         return { ok: true, filePath: finalPath };
       } catch (err) {
         return { ok: false, error: (err as Error).message };

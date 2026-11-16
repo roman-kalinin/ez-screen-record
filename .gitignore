@@ -20,3 +20,6 @@ resources/ffmpeg/*
 # Native audio-helper build artifacts
 native/audio-helper/*.exe
 native/audio-helper/*.obj
+
+# Per-architecture macOS ffmpeg binaries (fetched by tools/fetch-ffmpeg.mjs).
+resources/ffmpeg-mac-*/

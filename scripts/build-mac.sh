@@ -37,13 +37,17 @@ echo "node $(node -v), npm $(npm -v)"
 step "Installing dependencies (npm install)"
 npm install
 
-step "Fetching the macOS ffmpeg build"
-# Only fetch if a usable mac ffmpeg isn't already present, so re-runs are quick.
-if [[ -x "resources/ffmpeg/ffmpeg" ]]; then
-  echo "resources/ffmpeg/ffmpeg already present — skipping download."
-else
-  npm run fetch:ffmpeg
-fi
+step "Fetching the macOS ffmpeg builds (arm64 + x64)"
+# One binary per architecture: each DMG must carry an ffmpeg for its own CPU.
+# An Intel-only ffmpeg on an Apple Silicon Mac without Rosetta cannot start at
+# all ("spawn Unknown system error -86"). Only fetch what is missing.
+for arch in arm64 x64; do
+  if [[ -x "resources/ffmpeg-mac-$arch/ffmpeg" ]]; then
+    echo "resources/ffmpeg-mac-$arch/ffmpeg already present — skipping."
+  else
+    node tools/fetch-ffmpeg.mjs --arch="$arch"
+  fi
+done
 
 step "Building the app and packaging the .dmg"
 npm run dist:mac

@@ -1,6 +1,6 @@
 {
   "name": "ez-screen-record",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "A minimal screen recorder for tutorial videos",
   "main": "dist-main/main/main.js",
   "author": "joket",
@@ -52,15 +52,6 @@
       "build/icon.*",
       "!node_modules/**/*"
     ],
-    "extraResources": [
-      {
-        "from": "resources/ffmpeg",
-        "to": "ffmpeg",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
     "win": {
       "target": [
         {
@@ -72,7 +63,16 @@
       ],
       "icon": "build/icon.ico",
       "artifactName": "${productName} Setup ${version}.${ext}",
-      "signAndEditExecutable": false
+      "signAndEditExecutable": false,
+      "extraResources": [
+        {
+          "from": "resources/ffmpeg",
+          "to": "ffmpeg",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ]
     },
     "mac": {
       "target": [
@@ -96,7 +96,16 @@
         "NSMicrophoneUsageDescription": "Ez Screen Record needs your microphone to record narration.",
         "NSAudioCaptureUsageDescription": "Ez Screen Record needs audio capture access to record system sound.",
         "NSScreenCaptureUsageDescription": "Ez Screen Record needs screen recording access to capture your screen."
-      }
+      },
+      "extraResources": [
+        {
+          "from": "resources/ffmpeg-mac-${arch}",
+          "to": "ffmpeg",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ]
     },
     "dmg": {
       "artifactName": "${productName} ${version} ${arch}.${ext}",
