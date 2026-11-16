@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ez Screen Record for Mac</title>
-<meta name="description" content="A minimal screen recorder for tutorial videos. Install on your Mac with one command.">
+<title>Ez Screen Record for Mac and Windows</title>
+<meta name="description" content="A minimal screen recorder for tutorial videos. Install on your Mac with one command, or download it for Windows.">
 <link rel="icon" href="icon.png">
 <style>
   :root {
@@ -17,7 +17,7 @@
     font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
     display: flex; align-items: center; justify-content: center; padding: 48px 20px;
   }
-  main { width: 100%; max-width: 640px; }
+  main { width: 100%; max-width: 640px; min-width: 0; }
   .logo { width: 72px; height: 72px; border-radius: 16px; display: block; margin-bottom: 24px; }
   h1 { font-size: 34px; line-height: 1.15; margin: 0 0 10px; letter-spacing: -.02em; }
   .lead { color: var(--muted); margin: 0 0 36px; font-size: 18px; }
@@ -28,7 +28,7 @@
   }
   .cmd code {
     flex: 1; padding: 16px 18px; font: 14px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
-    white-space: nowrap; overflow-x: auto; color: var(--text);
+    white-space: nowrap; overflow-x: auto; color: var(--text); min-width: 0;
   }
   .cmd button {
     border: 0; border-left: 1px solid var(--line); background: transparent; color: var(--text);
@@ -44,14 +44,36 @@
   }
   .note { border-top: 1px solid var(--line); padding-top: 22px; color: var(--muted); font-size: 14px; }
   a { color: var(--text); }
+  .toggle {
+    display: inline-flex; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 4px; margin-bottom: 28px;
+  }
+  .toggle button {
+    border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 15px;
+    padding: 9px 22px; border-radius: 9px; cursor: pointer;
+  }
+  .toggle button[aria-selected="true"] { background: rgba(255,255,255,.09); color: var(--text); }
+  .section[hidden] { display: none; }
+  .dl {
+    display: inline-flex; align-items: center; gap: 10px; background: var(--accent); color: #0b0b0d;
+    text-decoration: none; font-weight: 600; padding: 14px 22px; border-radius: 12px;
+  }
+  .dl:hover { filter: brightness(1.08); }
+  .small { color: var(--muted); font-size: 14px; margin: 14px 0 0; }
 </style>
 </head>
 <body>
 <main>
   <img class="logo" src="icon.png" alt="">
   <h1>Ez Screen Record</h1>
-  <p class="lead">A minimal screen recorder for tutorial videos. Works on Apple Silicon and Intel Macs.</p>
+  <p class="lead">A minimal screen recorder for tutorial videos. For Mac (Apple Silicon and Intel) and Windows.</p>
 
+  <div class="toggle" role="tablist">
+    <button type="button" role="tab" data-os="mac">Mac</button>
+    <button type="button" role="tab" data-os="win">Windows</button>
+  </div>
+
+  <section class="section" id="mac">
   <div class="label">Install on your Mac</div>
   <div class="cmd">
     <code id="cmd">curl -fsSL https://roman-kalinin.github.io/ez-screen-record/install.sh | bash</code>
@@ -70,8 +92,37 @@
     <a href="https://github.com/roman-kalinin/ez-screen-record/releases/latest">the latest release</a>
     (<em>arm64</em> for Apple Silicon, <em>x64</em> for Intel).
   </p>
+  </section>
+
+  <section class="section" id="win">
+  <div class="label">Install on Windows</div>
+  <a class="dl" id="win-dl" href="https://github.com/roman-kalinin/ez-screen-record/releases/latest">Download for Windows</a>
+  <p class="small">
+    Run the installer. If Windows SmartScreen warns about an unknown publisher,
+    click <strong>More info</strong>, then <strong>Run anyway</strong>.
+  </p>
+  </section>
 </main>
 <script>
+  // Point the Windows button straight at the newest installer.
+  fetch('https://api.github.com/repos/roman-kalinin/ez-screen-record/releases/latest')
+    .then((r) => r.json())
+    .then((rel) => {
+      const exe = (rel.assets || []).find((a) => /\.exe$/i.test(a.name));
+      if (exe) document.getElementById('win-dl').href = exe.browser_download_url;
+    })
+    .catch(() => {});
+  // Mac / Windows toggle; starts on the visitor's own platform.
+  const tabs = document.querySelectorAll('.toggle button');
+  function show(os) {
+    tabs.forEach((t) => t.setAttribute('aria-selected', String(t.dataset.os === os)));
+    document.getElementById('mac').hidden = os !== 'mac';
+    document.getElementById('win').hidden = os !== 'win';
+    history.replaceState(null, '', '#' + os);
+  }
+  tabs.forEach((t) => t.addEventListener('click', () => show(t.dataset.os)));
+  const fromHash = location.hash.slice(1);
+  show(fromHash === 'mac' || fromHash === 'win' ? fromHash : /Windows/i.test(navigator.userAgent) ? 'win' : 'mac');
   const btn = document.getElementById('copy');
   btn.addEventListener('click', async () => {
     await navigator.clipboard.writeText(document.getElementById('cmd').textContent);
