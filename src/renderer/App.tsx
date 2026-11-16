@@ -68,6 +68,7 @@ import {
   FPS_OPTIONS,
   QUALITY_PRESETS,
   CAPTURE_ENGINES,
+  CRISP_ENGINE_ENABLED,
   type AppSettings,
   type CaptureEngine,
   type CaptureSource,
@@ -890,9 +891,10 @@ export function App() {
     // ask for, which is worse than quietly using the other engine.
     const picked = sourcesRef.current.find((x) => x.id === cfg.screenSourceId);
     const needsBrowser = picked?.kind === 'window';
-    const useNative = nativeAvailableRef.current && cfg.engine === 'crisp' && !needsBrowser;
+    const wantsCrisp = CRISP_ENGINE_ENABLED && cfg.engine === 'crisp';
+    const useNative = nativeAvailableRef.current && wantsCrisp && !needsBrowser;
 
-    if (needsBrowser && cfg.engine === 'crisp') {
+    if (needsBrowser && wantsCrisp) {
       notify(
         'Recording this window with the flexible engine',
         'The best-quality engine can only capture a whole screen.',
@@ -1815,6 +1817,8 @@ export function App() {
                 Settings
               </DialogTitle>
               <DialogContent className={s.settingsPanel}>
+              {CAPTURE_ENGINES.length > 1 && (
+              <>
               <Text size={200} weight="semibold">
                 Capture engine
               </Text>
@@ -1848,6 +1852,8 @@ export function App() {
               </Text>
 
               <Divider />
+              </>
+              )}
 
               <Text size={200} weight="semibold">
                 Quality
@@ -1880,7 +1886,7 @@ export function App() {
               <Text size={100} style={{ color: tokens.colorNeutralForeground3 }}>
                 {QUALITY_PRESETS.find((q) => q.value === settings.recording.quality)?.detail}
               </Text>
-              {!nativeAvailable && settings.recording.engine === 'crisp' && (
+              {CRISP_ENGINE_ENABLED && !nativeAvailable && settings.recording.engine === 'crisp' && (
                 <Text size={100} style={{ color: tokens.colorPaletteRedForeground1 }}>
                   ffmpeg was not found — the flexible engine will be used instead, which
                   produces softer text.

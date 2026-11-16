@@ -98,7 +98,14 @@ export type ResolutionPreset = 'source' | '2160' | '1440' | '1080' | '720';
  */
 export type CaptureEngine = 'overlay' | 'crisp';
 
-export const CAPTURE_ENGINES: Array<{
+/**
+ * The ffmpeg ("crisp") engine is switched off for now: the browser engine is
+ * the one that ships. While false, the option is hidden from Settings and a
+ * saved 'crisp' choice falls back to the browser engine.
+ */
+export const CRISP_ENGINE_ENABLED = false;
+
+const ALL_CAPTURE_ENGINES: Array<{
   value: CaptureEngine;
   label: string;
   detail: string;
@@ -120,6 +127,10 @@ export const CAPTURE_ENGINES: Array<{
       '12 Mbps at 1440p in 4:2:0, so fine text is softer.',
   },
 ];
+
+export const CAPTURE_ENGINES = ALL_CAPTURE_ENGINES.filter(
+  (e) => CRISP_ENGINE_ENABLED || e.value !== 'crisp',
+);
 
 export type QualityPreset = 'high' | 'balanced' | 'compact';
 

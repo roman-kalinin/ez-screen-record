@@ -6,6 +6,24 @@ something. The version is stamped into the installer filename
 (`Ez Screen Record Setup 1.2.0.exe`) and shown in the app's Settings menu, so an
 installed copy can always be identified.
 
+## 1.5.1 — 2026-11-16
+
+### Fixed
+- **"Could not save recording — spawn Unknown system error -86" on Apple
+  Silicon Macs.** Both Mac builds shipped the same Intel-only ffmpeg, which
+  cannot start on an Apple Silicon Mac without Rosetta. Each Mac build now
+  carries an ffmpeg for its own CPU, and a failing ffmpeg can no longer make a
+  save fail: the recording is kept even if the MP4 conversion step breaks.
+
+### Changed
+- **The "Best quality — whole screen only" (ffmpeg) capture engine is turned
+  off for this release.** Settings no longer offer the engine choice, and a
+  saved "Best quality" setting falls back to the flexible browser engine.
+  Re-enable it with `CRISP_ENGINE_ENABLED` in `src/shared/types.ts`.
+
+### Added
+- A built-in single-video editor, opened from the "Recording saved" toast.
+
 ## 1.4.0 — 2026-08-03
 
 ### Added
