@@ -12,7 +12,16 @@
   const stepN = document.getElementById('step-n');
   const stepWrap = document.getElementById('step-wrap');
   const progress = document.getElementById('progress');
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Every wait belongs to one run of the loop. Hiding the tab ends that run
+  // (background timers are throttled, which would desync the clicks from the
+  // app), and showing it again starts a clean one.
+  const STALE = Symbol('stale');
+  let gen = 0;
+  const sleep = (ms) => {
+    const g = gen;
+    return new Promise((resolve, reject) =>
+      setTimeout(() => (g === gen ? resolve() : reject(STALE)), ms));
+  };
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   new ResizeObserver(() => {
@@ -22,7 +31,14 @@
   // While recording, the app hands over to its toolbar (as it does for real).
   window.addEventListener('message', (e) => {
     const m = e.data;
-    if (!m || !m.ezDemo || m.type !== 'toolbarMode') return;
+    if (!m || !m.ezDemo) return;
+    // Relay app <-> toolbar messages between the two frames of this page only.
+    if (m.type === 'bus') {
+      const target = m.data.to === 'toolbar' ? tbFrame : frame;
+      target.contentWindow && target.contentWindow.postMessage({ ezBus: true, ...m.data }, '*');
+      return;
+    }
+    if (m.type !== 'toolbarMode') return;
     frame.classList.toggle('away', !!m.data);
     desk.classList.toggle('on', !!m.data);
     tbFrame.classList.toggle('on', !!m.data);
@@ -155,9 +171,11 @@
 
   const loaded = () => new Promise((r) => frame.addEventListener('load', r, { once: true }));
 
+  let firstRun = true;
   async function loop() {
     if (doc()?.readyState !== 'complete') await loaded();
-    for (let round = 0; ; round++) {
+    for (let round = firstRun ? 0 : 1; ; round++) {
+      firstRun = false;
       if (round > 0) {
         const l = loaded();
         frame.contentWindow.location.reload();
@@ -176,12 +194,21 @@
         bar.style.setProperty('--d', s.ms + 'ms');
         bar.className = 'now start'; void bar.offsetWidth; bar.className = 'now';
         const started = Date.now();
-        try { await s.run(); } catch (e) { console.warn('demo step failed', e); }
+        try { await s.run(); } catch (e) { if (e === STALE) throw e; console.warn('demo step failed', e); }
         await sleep(Math.max(0, s.ms - (Date.now() - started)));
         bar.className = 'done';
       }
     }
   }
-  if (!reduced) loop();
-  else caption(1, 'Pick a screen, turn on mic and camera, hit record.');
+  function start() {
+    gen++;
+    loop().catch((e) => { if (e !== STALE) console.warn('demo stopped', e); });
+  }
+  if (!reduced) {
+    if (!document.hidden) start();
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) gen++; // abandon the current run
+      else start();
+    });
+  } else caption(1, 'Pick a screen, turn on mic and camera, hit record.');
 })();

@@ -1099,6 +1099,10 @@ export function App() {
       return;
     }
 
+    // Nothing is recording (a late Stop from the toolbar, say). Going on would
+    // set 'saving' and wait for a recorder that never stops: stuck "Saving…".
+    if (stateRef.current === 'idle' || stateRef.current === 'saving') return;
+
     if (nativeStartRef.current) {
       // Push it, don't just set it: the toolbar is a separate window and only
       // learns the state when it is sent one. Without this the bar kept

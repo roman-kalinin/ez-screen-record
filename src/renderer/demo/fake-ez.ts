@@ -13,15 +13,22 @@ const role: Role = (document.documentElement.dataset.role as Role) || 'control';
 // ---------------------------------------------------------------------------
 // Message bus between the demo frames (control window <-> toolbar) and the page
 // ---------------------------------------------------------------------------
-const bus = new BroadcastChannel('ez-demo');
+// Messages go through the hosting page, which hands them to the other frame.
+// (Not a BroadcastChannel: that reaches every open tab of the site, so one
+// tab's Stop would land in another tab's app.)
 const listeners = new Map<string, Set<(p: any) => void>>();
-bus.onmessage = (e) => {
-  const { to, channel, payload } = e.data || {};
-  if (to !== role) return;
+const deliver = (channel: string, payload: unknown) =>
   listeners.get(channel)?.forEach((cb) => cb(payload));
-};
+window.addEventListener('message', (e) => {
+  const m = e.data;
+  if (m && m.ezBus && m.to === role) deliver(m.channel, m.payload);
+});
 const sendTo = (to: Role, channel: string, payload?: unknown) => {
-  bus.postMessage({ to, channel, payload });
+  if (window.parent !== window) {
+    window.parent.postMessage({ ezDemo: true, type: 'bus', data: { to, channel, payload } }, '*');
+  } else if (to === role) {
+    deliver(channel, payload);
+  }
   return Promise.resolve(true);
 };
 /** Tell the hosting page about window-level changes (toolbar mode etc.). */
