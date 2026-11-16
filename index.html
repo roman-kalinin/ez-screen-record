@@ -9,40 +9,66 @@
 <style>
   :root {
     --bg: #0b0b0d; --panel: #141418; --text: #ededf0; --muted: #9a9aa3;
-    --line: rgba(255,255,255,.08); --accent: #7c8cff;
+    --line: rgba(255,255,255,.08); --accent: #7c8cff; --red: #d9443c;
+    --sans: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --display: "Segoe UI Variable Display", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   }
   * { box-sizing: border-box; }
+  html { background: var(--bg); }
   body {
-    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
-    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-    display: flex; align-items: center; justify-content: center; padding: 48px 20px;
+    margin: 0; min-height: 100vh; color: var(--text);
+    font: 16px/1.55 var(--sans);
+    display: flex; align-items: center; justify-content: center; padding: 48px 24px;
+    position: relative; overflow-x: hidden;
   }
-  main { width: 100%; max-width: 640px; min-width: 0; }
+
+  /* Slow, barely-there moving gradient behind everything */
+  .bg { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+  .bg i {
+    position: absolute; width: 60vmax; height: 60vmax; border-radius: 50%;
+    filter: blur(90px); opacity: .16; will-change: transform;
+  }
+  .bg i:nth-child(1) { background: #4f5dff; top: -25vmax; left: -15vmax; animation: drift1 28s ease-in-out infinite alternate; }
+  .bg i:nth-child(2) { background: #b04bff; bottom: -30vmax; right: -20vmax; animation: drift2 34s ease-in-out infinite alternate; }
+  .bg i:nth-child(3) { background: #ff5a4f; top: 30%; left: 40%; width: 40vmax; height: 40vmax; opacity: .08; animation: drift3 40s ease-in-out infinite alternate; }
+  @keyframes drift1 { to { transform: translate(30vw, 25vh) scale(1.15); } }
+  @keyframes drift2 { to { transform: translate(-35vw, -20vh) scale(1.1); } }
+  @keyframes drift3 { to { transform: translate(-30vw, 15vh) scale(.85); } }
+
+  .wrap {
+    width: 100%; max-width: 1480px; display: grid; gap: 96px; align-items: center;
+    grid-template-columns: minmax(0, 500px) minmax(0, 1fr);
+  }
+  main { min-width: 0; }
   .logo { width: 72px; height: 72px; border-radius: 16px; display: block; margin-bottom: 24px; }
-  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 10px; letter-spacing: -.02em; }
-  .lead { color: var(--muted); margin: 0 0 36px; font-size: 18px; }
+  h1 { font: 600 36px/1.15 var(--display); margin: 0 0 10px; letter-spacing: -.01em; }
+  .lead { color: var(--muted); margin: 0 0 32px; font-size: 18px; }
   .label { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 10px; }
   .cmd {
     display: flex; align-items: stretch; background: var(--panel); border: 1px solid var(--line);
     border-radius: 12px; overflow: hidden;
   }
   .cmd code {
-    flex: 1; padding: 16px 18px; font: 14px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
-    white-space: nowrap; overflow-x: auto; color: var(--text); min-width: 0;
+    flex: 1; padding: 16px 18px; font: 14px/1.5 "Cascadia Mono", Consolas, ui-monospace, "SF Mono", Menlo, monospace;
+    white-space: nowrap; overflow-x: auto; color: var(--text); min-width: 0; scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 40px), transparent);
+            mask-image: linear-gradient(90deg, #000 calc(100% - 40px), transparent);
   }
+  .cmd code::-webkit-scrollbar { display: none; }
   .cmd button {
     border: 0; border-left: 1px solid var(--line); background: transparent; color: var(--text);
     padding: 0 20px; font: inherit; font-size: 14px; cursor: pointer; min-width: 84px;
   }
   .cmd button:hover { background: rgba(255,255,255,.04); }
   .cmd button.done { color: var(--accent); }
-  ol { color: var(--muted); padding-left: 20px; margin: 22px 0 40px; }
+  ol { color: var(--muted); padding-left: 20px; margin: 22px 0 36px; }
   ol li { margin: 6px 0; }
   kbd {
-    font: 13px ui-monospace, Menlo, monospace; background: var(--panel); border: 1px solid var(--line);
+    font: 13px "Cascadia Mono", Consolas, ui-monospace, Menlo, monospace; background: var(--panel); border: 1px solid var(--line);
     border-radius: 5px; padding: 1px 6px; color: var(--text);
   }
-  .note { border-top: 1px solid var(--line); padding-top: 22px; color: var(--muted); font-size: 14px; }
+  .note { border-top: 1px solid var(--line); padding-top: 22px; color: var(--muted); font-size: 14px; margin: 0; }
+  .note code { font-family: "Cascadia Mono", Consolas, ui-monospace, Menlo, monospace; font-size: 13px; }
   a { color: var(--text); }
   .toggle {
     display: inline-flex; background: var(--panel); border: 1px solid var(--line);
@@ -56,17 +82,82 @@
   .toggle svg { width: 16px; height: 16px; fill: currentColor; }
   .toggle button[aria-selected="true"] { background: rgba(255,255,255,.09); color: var(--text); }
   .section[hidden] { display: none; }
-  .small { color: var(--muted); font-size: 14px; margin: 14px 0 0; }
+  .alt { display: flex; align-items: center; gap: 14px; margin: -14px 0 30px; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px 0 10px;
+    border-radius: 8px; border: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.04);
+    color: var(--text); font-size: 13px; font-weight: 500; text-decoration: none;
+    box-shadow: 0 1px 0 rgba(255,255,255,.04) inset;
+    transition: background .15s, border-color .15s;
+  }
+  .btn:hover { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.16); }
+  .btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; color: var(--muted); }
+  .btn .meta { color: var(--muted); font-weight: 400; }
+  .alt .or { color: var(--muted); font-size: 13px; }
+
+  /* ---------- Live demo: the real app UI in iframes ---------- */
+  .demo { min-width: 0; }
+  .screen {
+    position: relative; width: 100%; aspect-ratio: 16 / 10; border-radius: 14px; overflow: hidden;
+    box-shadow: 0 30px 80px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.08);
+    background: #1c2a52;
+  }
+  .scaler { position: absolute; left: 0; top: 0; width: 1200px; height: 750px; transform-origin: 0 0; }
+  .scaler canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .scaler iframe { position: absolute; border: 0; pointer-events: none; background: transparent; }
+  #app-frame {
+    left: 160px; top: 62px; width: 880px; height: 625px; border-radius: 8px;
+    box-shadow: 0 24px 60px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.08);
+    transition: opacity .35s, transform .35s;
+  }
+  #app-frame.away { opacity: 0; transform: scale(.96) translateY(20px); }
+  #tb-frame { inset: 0; width: 1200px; height: 750px; opacity: 0; transition: opacity .3s; }
+  #tb-frame.on { opacity: 1; }
+  .cursor {
+    position: absolute; left: 0; top: 0; width: 26px; height: 26px; z-index: 5; pointer-events: none;
+    transition: transform .8s cubic-bezier(.45,.05,.25,1);
+    filter: drop-shadow(0 2px 3px rgba(0,0,0,.5));
+  }
+  .cursor svg { width: 100%; height: 100%; }
+  .cursor::after {
+    content: ""; position: absolute; left: -10px; top: -10px; width: 20px; height: 20px; border-radius: 50%;
+    background: rgba(255,255,255,.6); transform: scale(0); opacity: 0;
+  }
+  .cursor.click::after { animation: tap .45s ease-out; }
+  @keyframes tap { from { transform: scale(.2); opacity: .9; } to { transform: scale(1.8); opacity: 0; } }
+
+  .caption { display: flex; align-items: center; gap: 12px; margin-top: 20px; min-height: 30px; }
+  .step-n {
+    flex: none; width: 26px; height: 26px; border-radius: 50%; background: rgba(124,140,255,.16);
+    color: var(--accent); font-size: 13px; font-weight: 600; display: grid; place-items: center;
+  }
+  .step-t { font-size: 16px; transition: opacity .25s; }
+  .progress { display: flex; gap: 6px; margin-top: 14px; }
+  .progress i { height: 3px; flex: 1; border-radius: 2px; background: rgba(255,255,255,.1); overflow: hidden; }
+  .progress i::after { content: ""; display: block; height: 100%; width: 0; background: var(--accent); }
+  .progress i.done::after { width: 100%; }
+  .progress i.now::after { width: 100%; transition: width var(--d, 2s) linear; }
+  .progress i.now.start::after { width: 0; transition: none; }
+
+  @media (max-width: 1100px) {
+    .wrap { grid-template-columns: minmax(0, 1fr); max-width: 640px; gap: 48px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .bg i { animation: none; }
+  }
 </style>
 </head>
 <body>
+<div class="bg" aria-hidden="true"><i></i><i></i><i></i></div>
+
+<div class="wrap">
 <main>
   <img class="logo" src="icon.png" alt="">
   <h1>Ez Screen Record</h1>
   <p class="lead">A minimal screen recorder for tutorial videos. For Mac (Apple Silicon and Intel) and Windows.</p>
 
   <div class="toggle" role="tablist">
-    <button type="button" role="tab" data-os="mac"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>Mac</button>
+    <button type="button" role="tab" data-os="mac"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.960.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.830-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>Mac</button>
     <button type="button" role="tab" data-os="win"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M0 3.449 9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>Windows</button>
   </div>
 
@@ -104,23 +195,50 @@
     <li>The app installs for your user (no admin needed) and opens.</li>
   </ol>
 
+  <div class="alt">
+    <span class="or">or</span>
+    <a class="btn" id="win-dl" href="https://github.com/roman-kalinin/ez-screen-record/releases/latest">
+      <svg viewBox="0 0 16 16"><path d="M8 2v8.5M4.5 7 8 10.5 11.5 7M2.5 13.5h11"/></svg>
+      Download installer <span class="meta" id="win-meta">.exe</span>
+    </a>
+  </div>
+
   <p class="note">
-    Running it again updates to the newest version.
-    Prefer to install by hand?
-    <a id="win-dl" href="https://github.com/roman-kalinin/ez-screen-record/releases/latest">Download the installer</a>
-    and run it. If SmartScreen warns about an unknown publisher, click <strong>More info</strong>, then <strong>Run anyway</strong>.
+    Running the command again updates to the newest version.
+    If SmartScreen warns about the installer, click <strong>More info</strong>, then <strong>Run anyway</strong>.
   </p>
   </section>
 </main>
+
+<aside class="demo" aria-label="How Ez Screen Record works">
+  <div class="screen" id="screen">
+    <div class="scaler" id="scaler">
+      <canvas id="desk" width="1200" height="750"></canvas>
+      <iframe id="app-frame" src="demo/demo.html" title="Ez Screen Record demo" tabindex="-1"></iframe>
+      <iframe id="tb-frame" src="demo/demo-toolbar.html" title="" tabindex="-1" allowtransparency="true"></iframe>
+      <div class="cursor" id="cursor">
+        <svg viewBox="0 0 20 20"><path d="M3 2v14l4-3.6 2.6 5.6 2.3-1-2.6-5.5H15z" fill="#fff" stroke="#111" stroke-width="1.2" stroke-linejoin="round"/></svg>
+      </div>
+    </div>
+  </div>
+  <div class="caption"><span class="step-n" id="step-n">1</span><span class="step-t" id="step-t">Pick what to record</span></div>
+  <div class="progress" id="progress"></div>
+</aside>
+</div>
+
 <script>
-  // Point the Windows button straight at the newest installer.
+  // Point the Windows download link straight at the newest installer.
   fetch('https://api.github.com/repos/roman-kalinin/ez-screen-record/releases/latest')
     .then((r) => r.json())
     .then((rel) => {
       const exe = (rel.assets || []).find((a) => /\.exe$/i.test(a.name));
-      if (exe) document.getElementById('win-dl').href = exe.browser_download_url;
+      if (!exe) return;
+      document.getElementById('win-dl').href = exe.browser_download_url;
+      document.getElementById('win-meta').textContent =
+        `${(rel.tag_name || '').replace(/^v/, '')} · ${Math.round(exe.size / 1048576)} MB`;
     })
     .catch(() => {});
+
   // Mac / Windows toggle; starts on the visitor's own platform.
   const tabs = document.querySelectorAll('.toggle button');
   function show(os) {
@@ -132,6 +250,7 @@
   tabs.forEach((t) => t.addEventListener('click', () => show(t.dataset.os)));
   const fromHash = location.hash.slice(1);
   show(fromHash === 'mac' || fromHash === 'win' ? fromHash : /Windows/i.test(navigator.userAgent) ? 'win' : 'mac');
+
   document.querySelectorAll('.copy').forEach((btn) => {
     btn.addEventListener('click', async () => {
       await navigator.clipboard.writeText(btn.previousElementSibling.textContent);
@@ -139,6 +258,8 @@
       setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('done'); }, 1600);
     });
   });
+
 </script>
+<script src="demo.js"></script>
 </body>
 </html>
