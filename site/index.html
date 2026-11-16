@@ -36,7 +36,7 @@
   @keyframes drift3 { to { transform: translate(-30vw, 15vh) scale(.85); } }
 
   .wrap {
-    width: 100%; max-width: 1180px; display: grid; gap: 64px; align-items: center;
+    width: 100%; max-width: 1140px; display: grid; gap: 36px; align-items: center;
     grid-template-columns: minmax(0, 560px) minmax(0, 1fr);
   }
   main { min-width: 0; }
@@ -50,8 +50,11 @@
   }
   .cmd code {
     flex: 1; padding: 16px 18px; font: 14px/1.5 "Cascadia Mono", Consolas, ui-monospace, "SF Mono", Menlo, monospace;
-    white-space: nowrap; overflow-x: auto; color: var(--text); min-width: 0; scrollbar-width: thin;
+    white-space: nowrap; overflow-x: auto; color: var(--text); min-width: 0; scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 40px), transparent);
+            mask-image: linear-gradient(90deg, #000 calc(100% - 40px), transparent);
   }
+  .cmd code::-webkit-scrollbar { display: none; }
   .cmd button {
     border: 0; border-left: 1px solid var(--line); background: transparent; color: var(--text);
     padding: 0 20px; font: inherit; font-size: 14px; cursor: pointer; min-width: 84px;
