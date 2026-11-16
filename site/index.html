@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ez Screen Record for Mac and Windows</title>
-<meta name="description" content="A minimal screen recorder for tutorial videos. Install on your Mac with one command, or download it for Windows.">
+<meta name="description" content="A minimal screen recorder for tutorial videos. Install on Mac or Windows with one command.">
 <link rel="icon" href="icon.png">
 <style>
   :root {
@@ -51,14 +51,11 @@
   .toggle button {
     border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 15px;
     padding: 9px 22px; border-radius: 9px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 9px;
   }
+  .toggle svg { width: 16px; height: 16px; fill: currentColor; }
   .toggle button[aria-selected="true"] { background: rgba(255,255,255,.09); color: var(--text); }
   .section[hidden] { display: none; }
-  .dl {
-    display: inline-flex; align-items: center; gap: 10px; background: var(--accent); color: #0b0b0d;
-    text-decoration: none; font-weight: 600; padding: 14px 22px; border-radius: 12px;
-  }
-  .dl:hover { filter: brightness(1.08); }
   .small { color: var(--muted); font-size: 14px; margin: 14px 0 0; }
 </style>
 </head>
@@ -69,15 +66,15 @@
   <p class="lead">A minimal screen recorder for tutorial videos. For Mac (Apple Silicon and Intel) and Windows.</p>
 
   <div class="toggle" role="tablist">
-    <button type="button" role="tab" data-os="mac">Mac</button>
-    <button type="button" role="tab" data-os="win">Windows</button>
+    <button type="button" role="tab" data-os="mac"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>Mac</button>
+    <button type="button" role="tab" data-os="win"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M0 3.449 9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>Windows</button>
   </div>
 
   <section class="section" id="mac">
   <div class="label">Install on your Mac</div>
   <div class="cmd">
-    <code id="cmd">curl -fsSL https://roman-kalinin.github.io/ez-screen-record/install.sh | bash</code>
-    <button id="copy" type="button">Copy</button>
+    <code>curl -fsSL https://roman-kalinin.github.io/ez-screen-record/install.sh | bash</code>
+    <button class="copy" type="button">Copy</button>
   </div>
 
   <ol>
@@ -96,10 +93,22 @@
 
   <section class="section" id="win">
   <div class="label">Install on Windows</div>
-  <a class="dl" id="win-dl" href="https://github.com/roman-kalinin/ez-screen-record/releases/latest">Download for Windows</a>
-  <p class="small">
-    Run the installer. If Windows SmartScreen warns about an unknown publisher,
-    click <strong>More info</strong>, then <strong>Run anyway</strong>.
+  <div class="cmd">
+    <code>irm https://roman-kalinin.github.io/ez-screen-record/install.ps1 | iex</code>
+    <button class="copy" type="button">Copy</button>
+  </div>
+
+  <ol>
+    <li>Open <strong>PowerShell</strong> (<kbd>Win</kbd>, type “PowerShell”, press <kbd>Enter</kbd>).</li>
+    <li>Paste the command and press <kbd>Enter</kbd>.</li>
+    <li>The app installs for your user (no admin needed) and opens.</li>
+  </ol>
+
+  <p class="note">
+    Running it again updates to the newest version.
+    Prefer to install by hand?
+    <a id="win-dl" href="https://github.com/roman-kalinin/ez-screen-record/releases/latest">Download the installer</a>
+    and run it. If SmartScreen warns about an unknown publisher, click <strong>More info</strong>, then <strong>Run anyway</strong>.
   </p>
   </section>
 </main>
@@ -123,11 +132,12 @@
   tabs.forEach((t) => t.addEventListener('click', () => show(t.dataset.os)));
   const fromHash = location.hash.slice(1);
   show(fromHash === 'mac' || fromHash === 'win' ? fromHash : /Windows/i.test(navigator.userAgent) ? 'win' : 'mac');
-  const btn = document.getElementById('copy');
-  btn.addEventListener('click', async () => {
-    await navigator.clipboard.writeText(document.getElementById('cmd').textContent);
-    btn.textContent = 'Copied'; btn.classList.add('done');
-    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('done'); }, 1600);
+  document.querySelectorAll('.copy').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(btn.previousElementSibling.textContent);
+      btn.textContent = 'Copied'; btn.classList.add('done');
+      setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('done'); }, 1600);
+    });
   });
 </script>
 </body>
